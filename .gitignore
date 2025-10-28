@@ -29,3 +29,10 @@ unicode_gen
 run_octane
 run_sunspider_like
 libwinpthread*.dll
+*.wasm
+.DS_Store
+wasi_version.h
+version.h
+build.h
+bindings.json
+HakoRegistry.generated.cs

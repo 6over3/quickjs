@@ -30,11 +30,12 @@
 #include <assert.h>
 #include <sys/time.h>
 #include <time.h>
+#include <stdbool.h>
 #include <fenv.h>
 #include <math.h>
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
-#elif defined(__linux__) || defined(__GLIBC__)
+#elif defined(__linux__) || defined(__GLIBC__) || defined(__wasi__) 
 #include <malloc.h>
 #elif defined(__FreeBSD__)
 #include <malloc_np.h>
@@ -72,7 +73,7 @@
 #define CONFIG_ATOMICS
 #endif
 
-#if !defined(EMSCRIPTEN)
+#if !defined(EMSCRIPTEN) 
 /* enable stack limitation */
 #define CONFIG_STACK_CHECK
 #endif
@@ -488,6 +489,11 @@ struct JSContext {
                              const char *input, size_t input_len,
                              const char *filename, int flags, int scope_idx);
     void *user_opaque;
+
+    /* Monotonic clock time at context creation (in nanoseconds) */
+    uint64_t time_origin;
+    /* Wall clock time at context creation (in milliseconds) */
+    double time_origin_epoch_ms;
 };
 
 typedef union JSFloat64Union {
@@ -1697,6 +1703,8 @@ static size_t js_def_malloc_usable_size(const void *ptr)
     return _msize((void *)ptr);
 #elif defined(EMSCRIPTEN)
     return 0;
+#elif defined(__wasi__)
+    return malloc_usable_size((void *)ptr);
 #elif defined(__linux__) || defined(__GLIBC__)
     return malloc_usable_size((void *)ptr);
 #else
@@ -2188,7 +2196,9 @@ JSContext *JS_NewContext(JSRuntime *rt)
         JS_AddIntrinsicMapSet(ctx) ||
         JS_AddIntrinsicTypedArrays(ctx) ||
         JS_AddIntrinsicPromise(ctx) ||
-        JS_AddIntrinsicWeakRef(ctx)) {
+        JS_AddIntrinsicWeakRef(ctx) ||
+        JS_AddIntrinsicPerformance(ctx) ||
+        JS_AddIntrinsicCrypto(ctx)) {
         JS_FreeContext(ctx);
         return NULL;
     }
@@ -7348,7 +7358,7 @@ static no_inline __exception int __js_poll_interrupts(JSContext *ctx)
     JSRuntime *rt = ctx->rt;
     ctx->interrupt_counter = JS_INTERRUPT_COUNTER_INIT;
     if (rt->interrupt_handler) {
-        if (rt->interrupt_handler(rt, rt->interrupt_opaque)) {
+        if (rt->interrupt_handler(rt, ctx, rt->interrupt_opaque)) {
             JS_ThrowInterrupted(ctx);
             return -1;
         }
@@ -38709,6 +38719,22 @@ static JSValue js_global_isFinite(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, isfinite(d));
 }
 
+static JSValue js_microtask_job(JSContext *ctx,
+                                int argc, JSValueConst *argv)
+{
+    return JS_Call(ctx, argv[0], ctx->global_obj, 0, NULL);
+}
+
+static JSValue js_global_queueMicrotask(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    if (check_function(ctx, argv[0]))
+        return JS_EXCEPTION;
+    if (JS_EnqueueJob(ctx, js_microtask_job, 1, &argv[0]))
+        return JS_EXCEPTION;
+    return JS_UNDEFINED;
+}
+
 /* Object class */
 
 static JSValue JS_ToObject(JSContext *ctx, JSValueConst val)
@@ -46560,7 +46586,7 @@ int lre_check_timeout(void *opaque)
     JSContext *ctx = opaque;
     JSRuntime *rt = ctx->rt;
     return (rt->interrupt_handler && 
-            rt->interrupt_handler(rt, rt->interrupt_opaque));
+            rt->interrupt_handler(rt, ctx, rt->interrupt_opaque));
 }
 
 void *lre_realloc(void *opaque, void *ptr, size_t size)
@@ -53075,6 +53101,7 @@ static const JSCFunctionListEntry js_global_funcs[] = {
     JS_CFUNC_DEF("parseFloat", 1, js_parseFloat ),
     JS_CFUNC_DEF("isNaN", 1, js_global_isNaN ),
     JS_CFUNC_DEF("isFinite", 1, js_global_isFinite ),
+    JS_CFUNC_DEF("queueMicrotask", 1, js_global_queueMicrotask ),
 
     JS_CFUNC_MAGIC_DEF("decodeURI", 1, js_global_decodeURI, 0 ),
     JS_CFUNC_MAGIC_DEF("decodeURIComponent", 1, js_global_decodeURI, 1 ),
@@ -56075,6 +56102,715 @@ exception:
     return JS_EXCEPTION;
 }
 
+/* Uint8Array to/from base64 - Stage 4 Draft / October 28, 2025 */
+
+static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char base64url_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/* SkipAsciiWhitespace: returns next non-whitespace index */
+static size_t js_base64_skip_whitespace(const char *str, size_t index, size_t length)
+{
+  while (index < length) {
+    char c = str[index];
+    if (c != 0x09 && c != 0x0A && c != 0x0C && c != 0x0D && c != 0x20)
+      return index;
+    index++;
+  }
+  return index;
+}
+
+/* DecodeBase64Chunk: decode 2-4 base64 chars to 1-3 bytes */
+static int js_base64_decode_chunk(const char *chunk, size_t chunk_len, 
+                                   uint8_t *out, size_t *out_len, 
+                                   BOOL throw_on_extra_bits, const int *dec_table)
+{
+  char padded[4];
+  size_t i;
+  
+  for (i = 0; i < chunk_len; i++)
+    padded[i] = chunk[i];
+  for (; i < 4; i++)
+    padded[i] = 'A';
+  
+  int vals[4];
+  for (i = 0; i < 4; i++) {
+    vals[i] = dec_table[(unsigned char)padded[i]];
+    if (vals[i] < 0)
+      return -1;
+  }
+  
+  uint32_t triple = (vals[0] << 18) | (vals[1] << 12) | (vals[2] << 6) | vals[3];
+  uint8_t bytes[3];
+  bytes[0] = (triple >> 16) & 0xFF;
+  bytes[1] = (triple >> 8) & 0xFF;
+  bytes[2] = triple & 0xFF;
+  
+  if (chunk_len == 2) {
+    if (throw_on_extra_bits && bytes[1] != 0)
+      return -1;
+    out[0] = bytes[0];
+    *out_len = 1;
+  } else if (chunk_len == 3) {
+    if (throw_on_extra_bits && bytes[2] != 0)
+      return -1;
+    out[0] = bytes[0];
+    out[1] = bytes[1];
+    *out_len = 2;
+  } else {
+    out[0] = bytes[0];
+    out[1] = bytes[1];
+    out[2] = bytes[2];
+    *out_len = 3;
+  }
+  
+  return 0;
+}
+
+/* Result record for FromBase64/FromHex */
+typedef struct {
+  size_t read;
+  uint8_t *bytes;
+  size_t bytes_len;
+  int error; /* 0 = none, -1 = syntax error */
+} JSBase64DecodeResult;
+
+/* FromBase64: main decoding algorithm per spec 10.3 */
+static JSBase64DecodeResult js_base64_decode_impl(JSContext *ctx, const char *input,
+                                                    const char *alphabet,
+                                                    const char *last_chunk_handling,
+                                                    size_t max_length)
+{
+  JSBase64DecodeResult result = {0, NULL, 0, 0};
+  int dec_table[256];
+  const char *enc_table;
+  size_t i, length = strlen(input);
+  
+  if (max_length == 0) {
+    result.bytes = (uint8_t *)js_malloc(ctx, 1);
+    return result;
+  }
+  
+  /* Setup decode table */
+  for (i = 0; i < 256; i++)
+    dec_table[i] = -1;
+  
+  if (strcmp(alphabet, "base64") == 0) {
+    enc_table = base64_table;
+  } else {
+    enc_table = base64url_table;
+  }
+  
+  for (i = 0; i < 64; i++)
+    dec_table[(unsigned char)enc_table[i]] = i;
+  
+  /* Allocate max possible output */
+  size_t max_out = (length * 3) / 4 + 3;
+  if (max_out > max_length)
+    max_out = max_length;
+  uint8_t *bytes = (uint8_t *)js_malloc(ctx, max_out);
+  if (!bytes) {
+    result.error = -1;
+    return result;
+  }
+  
+  size_t bytes_len = 0;
+  size_t read = 0;
+  char chunk[4];
+  size_t chunk_len = 0;
+  size_t index = 0;
+  BOOL is_base64url = (strcmp(alphabet, "base64url") == 0);
+  BOOL is_loose = (strcmp(last_chunk_handling, "loose") == 0);
+  BOOL is_strict = (strcmp(last_chunk_handling, "strict") == 0);
+  BOOL is_stop = (strcmp(last_chunk_handling, "stop-before-partial") == 0);
+  
+  while (1) {
+    index = js_base64_skip_whitespace(input, index, length);
+    
+    if (index == length) {
+      if (chunk_len > 0) {
+        if (is_stop) {
+          break;
+        } else if (is_loose) {
+          if (chunk_len == 1) {
+            js_free(ctx, bytes);
+            result.error = -1;
+            return result;
+          }
+          uint8_t decoded[3];
+          size_t decoded_len;
+          if (js_base64_decode_chunk(chunk, chunk_len, decoded, &decoded_len, FALSE, dec_table) < 0) {
+            js_free(ctx, bytes);
+            result.error = -1;
+            return result;
+          }
+          for (i = 0; i < decoded_len && bytes_len < max_length; i++)
+            bytes[bytes_len++] = decoded[i];
+        } else { /* strict */
+          js_free(ctx, bytes);
+          result.error = -1;
+          return result;
+        }
+      }
+      result.read = length;
+      break;
+    }
+    
+    char c = input[index++];
+    
+    if (c == '=') {
+      if (chunk_len < 2) {
+        js_free(ctx, bytes);
+        result.error = -1;
+        return result;
+      }
+      
+      index = js_base64_skip_whitespace(input, index, length);
+      
+      if (chunk_len == 2) {
+        if (index == length) {
+          if (is_stop) {
+            break;
+          }
+          js_free(ctx, bytes);
+          result.error = -1;
+          return result;
+        }
+        
+        if (input[index] == '=') {
+          index = js_base64_skip_whitespace(input, index + 1, length);
+        }
+      }
+      
+      if (index < length) {
+        js_free(ctx, bytes);
+        result.error = -1;
+        return result;
+      }
+      
+      uint8_t decoded[3];
+      size_t decoded_len;
+      if (js_base64_decode_chunk(chunk, chunk_len, decoded, &decoded_len, is_strict, dec_table) < 0) {
+        js_free(ctx, bytes);
+        result.error = -1;
+        return result;
+      }
+      for (i = 0; i < decoded_len && bytes_len < max_length; i++)
+        bytes[bytes_len++] = decoded[i];
+      
+      result.read = length;
+      break;
+    }
+    
+    /* Handle base64url alphabet differences */
+    if (is_base64url) {
+      if (c == '+' || c == '/') {
+        js_free(ctx, bytes);
+        result.error = -1;
+        return result;
+      }
+      if (c == '-') c = '+';
+      if (c == '_') c = '/';
+    }
+    
+    /* Validate character */
+    if (dec_table[(unsigned char)c] < 0) {
+      js_free(ctx, bytes);
+      result.error = -1;
+      return result;
+    }
+    
+    /* Check if we can fit decoded bytes */
+    size_t remaining = max_length - bytes_len;
+    if ((remaining == 1 && chunk_len == 2) || (remaining == 2 && chunk_len == 3)) {
+      result.read = read;
+      break;
+    }
+    
+    chunk[chunk_len++] = c;
+    
+    if (chunk_len == 4) {
+      uint8_t decoded[3];
+      size_t decoded_len;
+      if (js_base64_decode_chunk(chunk, 4, decoded, &decoded_len, FALSE, dec_table) < 0) {
+        js_free(ctx, bytes);
+        result.error = -1;
+        return result;
+      }
+      for (i = 0; i < decoded_len; i++)
+        bytes[bytes_len++] = decoded[i];
+      
+      chunk_len = 0;
+      read = index;
+      
+      if (bytes_len == max_length) {
+        result.read = read;
+        break;
+      }
+    }
+  }
+  
+  result.bytes = bytes;
+  result.bytes_len = bytes_len;
+  return result;
+}
+
+/* FromHex: decode hex string per spec 10.4 */
+static JSBase64DecodeResult js_hex_decode_impl(JSContext *ctx, const char *input, size_t max_length)
+{
+  JSBase64DecodeResult result = {0, NULL, 0, 0};
+  size_t length = strlen(input);
+  
+  if (length % 2 != 0) {
+    result.error = -1;
+    return result;
+  }
+  
+  size_t max_bytes = length / 2;
+  if (max_bytes > max_length)
+    max_bytes = max_length;
+  
+  uint8_t *bytes = (uint8_t *)js_malloc(ctx, max_bytes);
+  if (!bytes) {
+    result.error = -1;
+    return result;
+  }
+  
+  size_t read = 0;
+  size_t bytes_len = 0;
+  
+  while (read < length && bytes_len < max_length) {
+    char h1 = input[read];
+    char h2 = input[read + 1];
+    
+    int v1 = -1, v2 = -1;
+    if (h1 >= '0' && h1 <= '9') v1 = h1 - '0';
+    else if (h1 >= 'a' && h1 <= 'f') v1 = h1 - 'a' + 10;
+    else if (h1 >= 'A' && h1 <= 'F') v1 = h1 - 'A' + 10;
+    
+    if (h2 >= '0' && h2 <= '9') v2 = h2 - '0';
+    else if (h2 >= 'a' && h2 <= 'f') v2 = h2 - 'a' + 10;
+    else if (h2 >= 'A' && h2 <= 'F') v2 = h2 - 'A' + 10;
+    
+    if (v1 < 0 || v2 < 0) {
+      js_free(ctx, bytes);
+      result.error = -1;
+      return result;
+    }
+    
+    bytes[bytes_len++] = (v1 << 4) | v2;
+    read += 2;
+  }
+  
+  result.read = read;
+  result.bytes = bytes;
+  result.bytes_len = bytes_len;
+  return result;
+}
+
+/* Uint8Array.prototype.toBase64([options]) */
+static JSValue js_typed_array_toBase64(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv)
+{
+  JSObject *p = get_typed_array(ctx, this_val);
+  if (!p || p->class_id != JS_CLASS_UINT8_ARRAY)
+    return JS_ThrowTypeError(ctx, "Not a Uint8Array");
+  
+  JSValue opts = (argc >= 1 && !JS_IsUndefined(argv[0])) ? JS_DupValue(ctx, argv[0]) : JS_NewObject(ctx);
+  if (!JS_IsObject(opts)) {
+    JS_FreeValue(ctx, opts);
+    return JS_ThrowTypeError(ctx, "options must be an object");
+  }
+  
+  const char *alphabet = "base64";
+  BOOL allocated_alphabet = FALSE;
+  JSValue val = JS_GetPropertyStr(ctx, opts, "alphabet");
+  if (!JS_IsUndefined(val)) {
+    const char *tmp = JS_ToCString(ctx, val);
+    if (!tmp) {
+      JS_FreeValue(ctx, val);
+      JS_FreeValue(ctx, opts);
+      return JS_EXCEPTION;
+    }
+    if (strcmp(tmp, "base64") != 0 && strcmp(tmp, "base64url") != 0) {
+      JS_FreeCString(ctx, tmp);
+      JS_FreeValue(ctx, val);
+      JS_FreeValue(ctx, opts);
+      return JS_ThrowTypeError(ctx, "alphabet must be 'base64' or 'base64url'");
+    }
+    alphabet = tmp;
+    allocated_alphabet = TRUE;
+  }
+  JS_FreeValue(ctx, val);
+  
+  BOOL omit_padding = FALSE;
+  val = JS_GetPropertyStr(ctx, opts, "omitPadding");
+  if (!JS_IsUndefined(val))
+    omit_padding = JS_ToBool(ctx, val);
+  JS_FreeValue(ctx, val);
+  JS_FreeValue(ctx, opts);
+  
+  int len = p->u.array.count;
+  int shift = typed_array_size_log2(p->class_id);
+  size_t byte_len = ((size_t)len) << shift;
+  uint8_t *data = p->u.array.u.uint8_ptr;
+  
+  const char *table = (strcmp(alphabet, "base64") == 0) ? base64_table : base64url_table;
+  
+  size_t full_groups = byte_len / 3;
+  size_t remainder = byte_len % 3;
+  size_t out_len = full_groups * 4;
+  if (remainder == 1) out_len += (omit_padding ? 2 : 4);
+  else if (remainder == 2) out_len += (omit_padding ? 3 : 4);
+  
+  char *out = (char *)js_malloc(ctx, out_len + 1);
+  if (!out) {
+    if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+    return JS_EXCEPTION;
+  }
+  
+  size_t i = 0, j = 0;
+  
+  for (i = 0; i < full_groups * 3; i += 3) {
+    uint32_t triple = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8) | (uint32_t)data[i + 2];
+    out[j++] = table[(triple >> 18) & 0x3F];
+    out[j++] = table[(triple >> 12) & 0x3F];
+    out[j++] = table[(triple >> 6) & 0x3F];
+    out[j++] = table[triple & 0x3F];
+  }
+  
+  if (remainder == 1) {
+    uint32_t triple = ((uint32_t)data[i] << 16);
+    out[j++] = table[(triple >> 18) & 0x3F];
+    out[j++] = table[(triple >> 12) & 0x3F];
+    if (!omit_padding) {
+      out[j++] = '=';
+      out[j++] = '=';
+    }
+  } else if (remainder == 2) {
+    uint32_t triple = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8);
+    out[j++] = table[(triple >> 18) & 0x3F];
+    out[j++] = table[(triple >> 12) & 0x3F];
+    out[j++] = table[(triple >> 6) & 0x3F];
+    if (!omit_padding)
+      out[j++] = '=';
+  }
+  
+  out[j] = '\0';
+  
+  if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+  
+  JSValue ret = JS_NewString(ctx, out);
+  js_free(ctx, out);
+  return ret;
+}
+
+/* Uint8Array.prototype.toHex() */
+static JSValue js_typed_array_toHex(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+  JSObject *p = get_typed_array(ctx, this_val);
+  if (!p || p->class_id != JS_CLASS_UINT8_ARRAY)
+    return JS_ThrowTypeError(ctx, "Not a Uint8Array");
+  
+  int len = p->u.array.count;
+  int shift = typed_array_size_log2(p->class_id);
+  size_t byte_len = ((size_t)len) << shift;
+  uint8_t *data = p->u.array.u.uint8_ptr;
+  
+  char *out = (char *)js_malloc(ctx, byte_len * 2 + 1);
+  if (!out)
+    return JS_EXCEPTION;
+  
+  static const char hex_chars[] = "0123456789abcdef";
+  for (size_t i = 0; i < byte_len; i++) {
+    out[i * 2] = hex_chars[data[i] >> 4];
+    out[i * 2 + 1] = hex_chars[data[i] & 0x0F];
+  }
+  out[byte_len * 2] = '\0';
+  
+  JSValue ret = JS_NewString(ctx, out);
+  js_free(ctx, out);
+  return ret;
+}
+
+/* Uint8Array.fromBase64(string[, options]) */
+static JSValue js_typed_array_fromBase64(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
+{
+  if (argc < 1 || !JS_IsString(argv[0]))
+    return JS_ThrowTypeError(ctx, "First argument must be a string");
+  
+  const char *input = JS_ToCString(ctx, argv[0]);
+  if (!input)
+    return JS_EXCEPTION;
+  
+  JSValue opts = (argc >= 2 && !JS_IsUndefined(argv[1])) ? JS_DupValue(ctx, argv[1]) : JS_NewObject(ctx);
+  if (!JS_IsObject(opts)) {
+    JS_FreeCString(ctx, input);
+    JS_FreeValue(ctx, opts);
+    return JS_ThrowTypeError(ctx, "options must be an object");
+  }
+  
+  const char *alphabet = "base64";
+  BOOL allocated_alphabet = FALSE;
+  JSValue val = JS_GetPropertyStr(ctx, opts, "alphabet");
+  if (!JS_IsUndefined(val)) {
+    const char *tmp = JS_ToCString(ctx, val);
+    if (!tmp) {
+      JS_FreeValue(ctx, val);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_EXCEPTION;
+    }
+    if (strcmp(tmp, "base64") != 0 && strcmp(tmp, "base64url") != 0) {
+      JS_FreeCString(ctx, tmp);
+      JS_FreeValue(ctx, val);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_ThrowTypeError(ctx, "alphabet must be 'base64' or 'base64url'");
+    }
+    alphabet = tmp;
+    allocated_alphabet = TRUE;
+  }
+  JS_FreeValue(ctx, val);
+  
+  const char *last_chunk = "loose";
+  BOOL allocated_last_chunk = FALSE;
+  val = JS_GetPropertyStr(ctx, opts, "lastChunkHandling");
+  if (!JS_IsUndefined(val)) {
+    const char *tmp = JS_ToCString(ctx, val);
+    if (!tmp) {
+      JS_FreeValue(ctx, val);
+      if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_EXCEPTION;
+    }
+    if (strcmp(tmp, "loose") != 0 && strcmp(tmp, "strict") != 0 && strcmp(tmp, "stop-before-partial") != 0) {
+      JS_FreeCString(ctx, tmp);
+      JS_FreeValue(ctx, val);
+      if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_ThrowTypeError(ctx, "lastChunkHandling must be 'loose', 'strict', or 'stop-before-partial'");
+    }
+    last_chunk = tmp;
+    allocated_last_chunk = TRUE;
+  }
+  JS_FreeValue(ctx, val);
+  JS_FreeValue(ctx, opts);
+  
+  JSBase64DecodeResult result = js_base64_decode_impl(ctx, input, alphabet, last_chunk, SIZE_MAX);
+  
+  JS_FreeCString(ctx, input);
+  if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+  if (allocated_last_chunk) JS_FreeCString(ctx, last_chunk);
+  
+  if (result.error) {
+    if (result.bytes) js_free(ctx, result.bytes);
+    return JS_ThrowSyntaxError(ctx, "Invalid base64 string");
+  }
+  
+  JSValue length_val = JS_NewInt32(ctx, result.bytes_len);
+  JSValue ta = JS_NewTypedArray(ctx, 1, (JSValueConst *)&length_val, JS_TYPED_ARRAY_UINT8);
+  JS_FreeValue(ctx, length_val);
+  
+  if (JS_IsException(ta)) {
+    js_free(ctx, result.bytes);
+    return ta;
+  }
+  
+  JSObject *ta_obj = get_typed_array(ctx, ta);
+  if (!ta_obj) {
+    js_free(ctx, result.bytes);
+    return JS_ThrowInternalError(ctx, "Failed to create Uint8Array");
+  }
+  
+  if (result.bytes_len > 0)
+    memcpy(ta_obj->u.array.u.uint8_ptr, result.bytes, result.bytes_len);
+  js_free(ctx, result.bytes);
+  
+  return ta;
+}
+
+/* Uint8Array.prototype.setFromBase64(string[, options]) */
+static JSValue js_typed_array_setFromBase64(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv)
+{
+  JSObject *p = get_typed_array(ctx, this_val);
+  if (!p || p->class_id != JS_CLASS_UINT8_ARRAY)
+    return JS_ThrowTypeError(ctx, "Not a Uint8Array");
+  
+  if (argc < 1 || !JS_IsString(argv[0]))
+    return JS_ThrowTypeError(ctx, "First argument must be a string");
+  
+  const char *input = JS_ToCString(ctx, argv[0]);
+  if (!input)
+    return JS_EXCEPTION;
+  
+  JSValue opts = (argc >= 2 && !JS_IsUndefined(argv[1])) ? JS_DupValue(ctx, argv[1]) : JS_NewObject(ctx);
+  if (!JS_IsObject(opts)) {
+    JS_FreeCString(ctx, input);
+    JS_FreeValue(ctx, opts);
+    return JS_ThrowTypeError(ctx, "options must be an object");
+  }
+  
+  const char *alphabet = "base64";
+  BOOL allocated_alphabet = FALSE;
+  JSValue val = JS_GetPropertyStr(ctx, opts, "alphabet");
+  if (!JS_IsUndefined(val)) {
+    const char *tmp = JS_ToCString(ctx, val);
+    if (!tmp) {
+      JS_FreeValue(ctx, val);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_EXCEPTION;
+    }
+    if (strcmp(tmp, "base64") != 0 && strcmp(tmp, "base64url") != 0) {
+      JS_FreeCString(ctx, tmp);
+      JS_FreeValue(ctx, val);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_ThrowTypeError(ctx, "alphabet must be 'base64' or 'base64url'");
+    }
+    alphabet = tmp;
+    allocated_alphabet = TRUE;
+  }
+  JS_FreeValue(ctx, val);
+  
+  const char *last_chunk = "loose";
+  BOOL allocated_last_chunk = FALSE;
+  val = JS_GetPropertyStr(ctx, opts, "lastChunkHandling");
+  if (!JS_IsUndefined(val)) {
+    const char *tmp = JS_ToCString(ctx, val);
+    if (!tmp) {
+      JS_FreeValue(ctx, val);
+      if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_EXCEPTION;
+    }
+    if (strcmp(tmp, "loose") != 0 && strcmp(tmp, "strict") != 0 && strcmp(tmp, "stop-before-partial") != 0) {
+      JS_FreeCString(ctx, tmp);
+      JS_FreeValue(ctx, val);
+      if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+      JS_FreeValue(ctx, opts);
+      JS_FreeCString(ctx, input);
+      return JS_ThrowTypeError(ctx, "lastChunkHandling must be 'loose', 'strict', or 'stop-before-partial'");
+    }
+    last_chunk = tmp;
+    allocated_last_chunk = TRUE;
+  }
+  JS_FreeValue(ctx, val);
+  JS_FreeValue(ctx, opts);
+  
+  int len = p->u.array.count;
+  int shift = typed_array_size_log2(p->class_id);
+  size_t byte_len = ((size_t)len) << shift;
+  
+  JSBase64DecodeResult result = js_base64_decode_impl(ctx, input, alphabet, last_chunk, byte_len);
+  
+  JS_FreeCString(ctx, input);
+  if (allocated_alphabet) JS_FreeCString(ctx, alphabet);
+  if (allocated_last_chunk) JS_FreeCString(ctx, last_chunk);
+  
+  if (result.error) {
+    if (result.bytes) js_free(ctx, result.bytes);
+    return JS_ThrowSyntaxError(ctx, "Invalid base64 string");
+  }
+  
+  if (result.bytes_len > 0) {
+    memcpy(p->u.array.u.uint8_ptr, result.bytes, result.bytes_len);
+  }
+  js_free(ctx, result.bytes);
+  
+  JSValue ret = JS_NewObject(ctx);
+  JS_SetPropertyStr(ctx, ret, "read", JS_NewInt64(ctx, result.read));
+  JS_SetPropertyStr(ctx, ret, "written", JS_NewInt64(ctx, result.bytes_len));
+  
+  return ret;
+}
+
+/* Uint8Array.fromHex(string) */
+static JSValue js_typed_array_fromHex(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv)
+{
+  if (argc < 1 || !JS_IsString(argv[0]))
+    return JS_ThrowTypeError(ctx, "First argument must be a string");
+  
+  const char *input = JS_ToCString(ctx, argv[0]);
+  if (!input)
+    return JS_EXCEPTION;
+  
+  JSBase64DecodeResult result = js_hex_decode_impl(ctx, input, SIZE_MAX);
+  JS_FreeCString(ctx, input);
+  
+  if (result.error) {
+    if (result.bytes) js_free(ctx, result.bytes);
+    return JS_ThrowSyntaxError(ctx, "Invalid hex string");
+  }
+  
+  JSValue length_val = JS_NewInt32(ctx, result.bytes_len);
+  JSValue ta = JS_NewTypedArray(ctx, 1, (JSValueConst *)&length_val, JS_TYPED_ARRAY_UINT8);
+  JS_FreeValue(ctx, length_val);
+  
+  if (JS_IsException(ta)) {
+    js_free(ctx, result.bytes);
+    return ta;
+  }
+  
+  JSObject *ta_obj = get_typed_array(ctx, ta);
+  if (!ta_obj) {
+    js_free(ctx, result.bytes);
+    return JS_ThrowInternalError(ctx, "Failed to create Uint8Array");
+  }
+  
+  if (result.bytes_len > 0)
+    memcpy(ta_obj->u.array.u.uint8_ptr, result.bytes, result.bytes_len);
+  js_free(ctx, result.bytes);
+  
+  return ta;
+}
+
+/* Uint8Array.prototype.setFromHex(string) */
+static JSValue js_typed_array_setFromHex(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv)
+{
+  JSObject *p = get_typed_array(ctx, this_val);
+  if (!p || p->class_id != JS_CLASS_UINT8_ARRAY)
+    return JS_ThrowTypeError(ctx, "Not a Uint8Array");
+  
+  if (argc < 1 || !JS_IsString(argv[0]))
+    return JS_ThrowTypeError(ctx, "First argument must be a string");
+  
+  const char *input = JS_ToCString(ctx, argv[0]);
+  if (!input)
+    return JS_EXCEPTION;
+  
+  int len = p->u.array.count;
+  int shift = typed_array_size_log2(p->class_id);
+  size_t byte_len = ((size_t)len) << shift;
+  
+  JSBase64DecodeResult result = js_hex_decode_impl(ctx, input, byte_len);
+  JS_FreeCString(ctx, input);
+  
+  if (result.error) {
+    if (result.bytes) js_free(ctx, result.bytes);
+    return JS_ThrowSyntaxError(ctx, "Invalid hex string");
+  }
+  
+  if (result.bytes_len > 0) {
+    memcpy(p->u.array.u.uint8_ptr, result.bytes, result.bytes_len);
+  }
+  js_free(ctx, result.bytes);
+  
+  JSValue ret = JS_NewObject(ctx);
+  JS_SetPropertyStr(ctx, ret, "read", JS_NewInt64(ctx, result.read));
+  JS_SetPropertyStr(ctx, ret, "written", JS_NewInt64(ctx, result.bytes_len));
+  
+  return ret;
+}
+
 #define special_indexOf 0
 #define special_lastIndexOf 1
 #define special_includes -1
@@ -56983,6 +57719,8 @@ static const JSCFunctionListEntry js_typed_array_base_funcs[] = {
     JS_CFUNC_DEF("from", 1, js_typed_array_from ),
     JS_CFUNC_DEF("of", 0, js_typed_array_of ),
     JS_CGETSET_DEF("[Symbol.species]", js_get_this, NULL ),
+    JS_CFUNC_DEF("fromBase64", 1, js_typed_array_fromBase64),
+    JS_CFUNC_DEF("fromHex", 1, js_typed_array_fromHex),
 };
 
 static const JSCFunctionListEntry js_typed_array_base_proto_funcs[] = {
@@ -57022,6 +57760,10 @@ static const JSCFunctionListEntry js_typed_array_base_proto_funcs[] = {
     JS_CFUNC_MAGIC_DEF("indexOf", 1, js_typed_array_indexOf, special_indexOf ),
     JS_CFUNC_MAGIC_DEF("lastIndexOf", 1, js_typed_array_indexOf, special_lastIndexOf ),
     JS_CFUNC_MAGIC_DEF("includes", 1, js_typed_array_indexOf, special_includes ),
+    JS_CFUNC_DEF("toBase64", 0, js_typed_array_toBase64),
+    JS_CFUNC_DEF("toHex", 0, js_typed_array_toHex),
+    JS_CFUNC_DEF("setFromBase64", 1, js_typed_array_setFromBase64),
+    JS_CFUNC_DEF("setFromHex", 1, js_typed_array_setFromHex),
     //JS_ALIAS_BASE_DEF("toString", "toString", 2 /* Array.prototype. */), @@@
 };
 
@@ -58601,3 +59343,319 @@ int JS_AddIntrinsicWeakRef(JSContext *ctx)
     JS_FreeValue(ctx, obj);
     return 0;
 }
+
+/* @BEGIN_Hako */
+
+JS_BOOL JS_IsPromise(JSValueConst val)
+{
+    return JS_VALUE_GET_TAG(val) == JS_TAG_OBJECT &&
+           JS_VALUE_GET_OBJ(val)->class_id == JS_CLASS_PROMISE;
+}
+
+JS_BOOL JS_IsArrayBuffer(JSValueConst val) {
+  JSObject *p;
+  if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
+    return FALSE;
+  p = JS_VALUE_GET_OBJ(val);
+  return (p->class_id == JS_CLASS_ARRAY_BUFFER) ||
+         (p->class_id == JS_CLASS_SHARED_ARRAY_BUFFER);
+}
+
+JS_BOOL JS_IsTypedArray(JSValueConst val) {
+  JSObject *p;
+  if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
+    return FALSE;
+  p = JS_VALUE_GET_OBJ(val);
+  return (p->class_id >= JS_CLASS_UINT8C_ARRAY) &&
+         (p->class_id <= JS_CLASS_FLOAT64_ARRAY);
+}
+
+JSTypedArrayEnum JS_GetTypedArrayType(JSValueConst val) {
+  JSObject *p;
+  if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
+    return -1;
+  p = JS_VALUE_GET_OBJ(val);
+  if ((p->class_id >= JS_CLASS_UINT8C_ARRAY) &&
+      (p->class_id <= JS_CLASS_FLOAT64_ARRAY)) {
+    return (JSTypedArrayEnum)(p->class_id - JS_CLASS_UINT8C_ARRAY);
+  }
+  return -1;
+}
+
+JSValue JS_NewTypedArrayWithBuffer(JSContext *ctx, JSValueConst buffer,
+                                   uint32_t byte_offset, uint32_t length,
+                                   JSTypedArrayEnum type) {
+    if (type < JS_TYPED_ARRAY_UINT8C || type > JS_TYPED_ARRAY_FLOAT64)
+        return JS_ThrowRangeError(ctx, "invalid typed array type");
+    
+    JSValue offset_val = JS_NewUint32(ctx, byte_offset);
+    JSValue length_val = JS_NewUint32(ctx, length);
+    
+    JSValueConst argv[3] = {buffer, offset_val, length_val};
+    
+    JSValue result = js_typed_array_constructor(ctx, JS_UNDEFINED, 3, 
+                                                 (JSValueConst*)argv,
+                                                 JS_CLASS_UINT8C_ARRAY + type);
+    
+    JS_FreeValue(ctx, offset_val);
+    JS_FreeValue(ctx, length_val);
+    
+    return result;
+}
+
+/* Performance API */
+
+static JSValue js_performance_now(JSContext *ctx, JSValueConst this_val,
+                           int argc, JSValueConst *argv) {
+#ifdef __wasi__
+    __wasi_errno_t err;
+    __wasi_timestamp_t current_time;
+    err = __wasi_clock_time_get(__WASI_CLOCKID_MONOTONIC, 0, &current_time);
+    if (err != 0) {
+        return JS_ThrowInternalError(ctx, "Failed to get monotonic time: error %d", err);
+    }
+    double elapsed_ms = (double)(current_time - ctx->time_origin) / 1000000.0;
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return JS_ThrowInternalError(ctx, "Failed to get monotonic time: error %d", errno);
+    }
+    uint64_t current_time = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    double elapsed_ms = (double)(current_time - ctx->time_origin) / 1000000.0;
+#endif
+    return JS_NewFloat64(ctx, elapsed_ms);
+}
+
+static JSValue js_performance_timeOrigin(JSContext *ctx, JSValueConst this_val,
+                                    int magic) {
+    // According to spec, timeOrigin should be the time relative to Unix epoch
+    // If we have stored the Unix time when the context was created, we can return that
+    double time_origin_ms = (double)(ctx->time_origin_epoch_ms);
+    return JS_NewFloat64(ctx, time_origin_ms);
+}
+
+static const JSCFunctionListEntry js_performance_funcs[] = {
+    JS_CFUNC_DEF("now", 0, js_performance_now),
+    JS_CGETSET_MAGIC_DEF("timeOrigin", js_performance_timeOrigin, NULL, MAGIC_SET),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Performance",
+                          JS_PROP_CONFIGURABLE),
+};
+
+static const JSCFunctionListEntry js_performance_obj[] = {
+    JS_OBJECT_DEF("performance", js_performance_funcs, countof(js_performance_funcs),
+                     JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE),
+};
+
+int JS_AddIntrinsicPerformance(JSContext *ctx) {
+#ifdef __wasi__
+    __wasi_errno_t err;
+    __wasi_timestamp_t monotonic_now;
+    err = __wasi_clock_time_get(__WASI_CLOCKID_MONOTONIC, 0, &monotonic_now);
+    if (err != 0) {
+        JS_ThrowInternalError(ctx, "Failed to get monotonic time: error %d", err);
+        return -1;
+    }
+    ctx->time_origin = monotonic_now;
+    __wasi_timestamp_t realtime_now;
+    err = __wasi_clock_time_get(__WASI_CLOCKID_REALTIME, 0, &realtime_now);
+    if (err != 0) {
+        JS_ThrowInternalError(ctx, "Failed to get realtime time: error %d", err);
+        return -1;
+    }
+    ctx->time_origin_epoch_ms = (double)realtime_now / 1000000.0;
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        JS_ThrowInternalError(ctx, "Failed to get monotonic time: error %d", errno);
+        return -1;
+    }
+    ctx->time_origin = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        JS_ThrowInternalError(ctx, "Failed to get realtime time: error %d", errno);
+        return -1;
+    }
+    ctx->time_origin_epoch_ms = (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+#endif
+    
+   return JS_SetPropertyFunctionList(ctx, ctx->global_obj, js_performance_obj,
+                                   countof(js_performance_obj));
+}
+
+/* Crypto API */
+
+static int fill_secure_random_bytes(JSContext *ctx, uint8_t *buffer, size_t length)
+{
+#if defined(__WASI_SDK__)
+    // Use WASI random_get function
+    __wasi_errno_t err = __wasi_random_get(buffer, length);
+    return (err == __WASI_ERRNO_SUCCESS) ? 0 : -1;
+#else
+    FILE *urandom = fopen("/dev/urandom", "rb");
+    if (!urandom) {
+        return -1;
+    }
+    size_t bytes_read = fread(buffer, 1, length, urandom);
+    fclose(urandom);
+    return (bytes_read == length) ? 0 : -1;
+#endif
+}
+
+static JSValue js_crypto_getRandomValues(JSContext *ctx,
+                                             JSValueConst this_val,
+                                             int argc, JSValueConst *argv)
+{
+    if (argc < 1) {
+        return JS_ThrowTypeError(ctx, "getRandomValues requires an array argument");
+    }
+
+    JSValueConst array = argv[0];
+    
+    JSObject *p = get_typed_array(ctx, array);
+    if (!p) {
+        return JS_EXCEPTION;
+    }
+
+     if (p->class_id != JS_CLASS_INT8_ARRAY &&
+        p->class_id != JS_CLASS_UINT8_ARRAY &&
+        p->class_id != JS_CLASS_UINT8C_ARRAY &&
+        p->class_id != JS_CLASS_INT16_ARRAY &&
+        p->class_id != JS_CLASS_UINT16_ARRAY &&
+        p->class_id != JS_CLASS_INT32_ARRAY &&
+        p->class_id != JS_CLASS_UINT32_ARRAY
+        && p->class_id != JS_CLASS_BIG_INT64_ARRAY
+        && p->class_id != JS_CLASS_BIG_UINT64_ARRAY
+        ) {
+        return JS_ThrowTypeError(ctx, "getRandomValues requires Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, or BigUint64Array");
+    }
+
+    int element_count = p->u.array.count;
+    int shift = typed_array_size_log2(p->class_id);
+    size_t byte_length = ((size_t)element_count) << shift;
+
+    if (byte_length > 65536) {
+        return JS_ThrowRangeError(ctx, "Array byte length exceeds 65536 bytes");
+    }
+
+    uint8_t *array_data = p->u.array.u.uint8_ptr;
+    
+    if (fill_secure_random_bytes(ctx, array_data, byte_length) != 0) {
+        return JS_ThrowInternalError(ctx, "Failed to generate secure random bytes");
+    }
+
+    return JS_DupValue(ctx, array);
+}
+
+static const char hex_to_char[16] = {
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+};
+
+static JSValue js_crypto_randomUUID(JSContext *ctx,
+                                        JSValueConst this_val,
+                                        int argc, JSValueConst *argv)
+{
+    uint8_t bytes[16];
+    
+    if (fill_secure_random_bytes(ctx, bytes, 16) != 0) {
+        return JS_ThrowInternalError(ctx, "Failed to generate secure random bytes");
+    }
+    
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    
+    char uuid_str[37];
+    char *p = uuid_str;
+    
+    for (int i = 0; i < 16; i++) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            *p++ = '-';
+        }
+        *p++ = hex_to_char[bytes[i] >> 4];
+        *p++ = hex_to_char[bytes[i] & 0x0F];
+    }
+    *p = '\0';
+    
+    return JS_NewString(ctx, uuid_str);
+}
+
+static JSValue js_crypto_randomUUIDv7(JSContext *ctx,
+                                          JSValueConst this_val,
+                                          int argc, JSValueConst *argv)
+{
+    uint8_t bytes[16];
+    uint64_t timestamp_ms;
+    
+    if (argc >= 1 && !JS_IsUndefined(argv[0])) {
+        if (!JS_IsNumber(argv[0])) {
+            return JS_ThrowTypeError(ctx, "Timestamp must be a number");
+        }
+        double ts_double;
+        if (JS_ToFloat64(ctx, &ts_double, argv[0]) < 0) {
+            return JS_EXCEPTION;
+        }
+        timestamp_ms = (uint64_t)ts_double;
+    } else {
+#if defined(__WASI_SDK__)
+        __wasi_timestamp_t timestamp;
+        if (__wasi_clock_time_get(__WASI_CLOCKID_REALTIME, 1000000, &timestamp) != __WASI_ERRNO_SUCCESS) {
+            return JS_ThrowInternalError(ctx, "Failed to get current time");
+        }
+        timestamp_ms = timestamp / 1000000;
+#else
+        struct timespec ts;
+        if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+            return JS_ThrowInternalError(ctx, "Failed to get current time");
+        }
+        timestamp_ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+#endif
+    }
+    
+    if (fill_secure_random_bytes(ctx, bytes, 16) != 0) {
+        return JS_ThrowInternalError(ctx, "Failed to generate secure random bytes");
+    }
+    
+    bytes[0] = (timestamp_ms >> 40) & 0xFF;
+    bytes[1] = (timestamp_ms >> 32) & 0xFF;
+    bytes[2] = (timestamp_ms >> 24) & 0xFF;
+    bytes[3] = (timestamp_ms >> 16) & 0xFF;
+    bytes[4] = (timestamp_ms >> 8) & 0xFF;
+    bytes[5] = timestamp_ms & 0xFF;
+    
+    bytes[6] = (bytes[6] & 0x0F) | 0x70;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    
+    char uuid_str[37];
+    char *p = uuid_str;
+    
+    for (int i = 0; i < 16; i++) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            *p++ = '-';
+        }
+        *p++ = hex_to_char[bytes[i] >> 4];
+        *p++ = hex_to_char[bytes[i] & 0x0F];
+    }
+    *p = '\0';
+    
+    return JS_NewString(ctx, uuid_str);
+}
+
+static const JSCFunctionListEntry js_crypto_funcs[] = {
+    JS_CFUNC_DEF("getRandomValues", 1, js_crypto_getRandomValues),
+    JS_CFUNC_DEF("randomUUID", 0, js_crypto_randomUUID),
+    JS_CFUNC_DEF("randomUUIDv7", 1, js_crypto_randomUUIDv7),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "Crypto",
+                          JS_PROP_CONFIGURABLE),
+};
+
+static const JSCFunctionListEntry js_crypto_obj[] = {
+    JS_OBJECT_DEF("crypto", js_crypto_funcs, countof(js_crypto_funcs),
+                     JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE),
+};
+
+int JS_AddIntrinsicCrypto(JSContext *ctx) {
+    
+    return JS_SetPropertyFunctionList(ctx, ctx->global_obj, js_crypto_obj,
+                                 countof(js_crypto_obj));
+}
+
+/* @END_Hako */
