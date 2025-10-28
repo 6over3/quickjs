@@ -283,6 +283,8 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
 
 #define JS_VALUE_HAS_REF_COUNT(v) ((unsigned)JS_VALUE_GET_TAG(v) >= (unsigned)JS_TAG_FIRST)
 
+#define JS_VALUE_IS_MODULE(v) (JS_VALUE_GET_TAG(v) == JS_TAG_MODULE)
+
 /* special values */
 #define JS_NULL      JS_MKVAL(JS_TAG_NULL, 0)
 #define JS_UNDEFINED JS_MKVAL(JS_TAG_UNDEFINED, 0)
@@ -406,6 +408,8 @@ int JS_AddIntrinsicMapSet(JSContext *ctx);
 int JS_AddIntrinsicTypedArrays(JSContext *ctx);
 int JS_AddIntrinsicPromise(JSContext *ctx);
 int JS_AddIntrinsicWeakRef(JSContext *ctx);
+int JS_AddIntrinsicPerformance(JSContext *ctx);
+int JS_AddIntrinsicCrypto(JSContext *ctx);
 
 JSValue js_string_codePointRange(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv);
@@ -913,7 +917,7 @@ typedef void JSHostPromiseRejectionTracker(JSContext *ctx, JSValueConst promise,
 void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRejectionTracker *cb, void *opaque);
 
 /* return != 0 if the JS code needs to be interrupted */
-typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
+typedef int JSInterruptHandler(JSRuntime *rt, JSContext *ctx, void *opaque);
 void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
 /* if can_block is TRUE, Atomics.wait() can be used */
 void JS_SetCanBlock(JSRuntime *rt, JS_BOOL can_block);
@@ -1160,6 +1164,21 @@ void JS_PrintValueRT(JSRuntime *rt, JSPrintValueWrite *write_func, void *write_o
                      JSValueConst val, const JSPrintValueOptions *options);
 void JS_PrintValue(JSContext *ctx, JSPrintValueWrite *write_func, void *write_opaque,
                    JSValueConst val, const JSPrintValueOptions *options);
+
+
+/* @BEGIN_Hako */
+
+JS_BOOL JS_IsPromise(JSValueConst val);
+JS_BOOL JS_IsArrayBuffer(JSValueConst val);
+JS_BOOL JS_IsTypedArray(JSValueConst val);
+
+JSTypedArrayEnum JS_GetTypedArrayType(JSValueConst val);
+
+JSValue JS_NewTypedArrayWithBuffer(JSContext *ctx, JSValueConst buffer,
+                                   uint32_t byte_offset, uint32_t length,
+                                   JSTypedArrayEnum type);
+
+/* @END_Hako */
 
 #undef js_unlikely
 #undef js_force_inline
