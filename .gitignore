@@ -33,6 +33,5 @@ libwinpthread*.dll
 .DS_Store
 wasi_version.h
 version.h
-build.h
 bindings.json
 HakoRegistry.generated.cs
