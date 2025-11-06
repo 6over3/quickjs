@@ -8,6 +8,7 @@
 
 #include "version.h"
 #include "wasi_version.h"
+#include "ts_strip/ts_strip.h"
 
 #define PKG "quickjs-wasi: "
 
@@ -76,6 +77,7 @@ extern void host_promise_rejection_tracker(JSContext *ctx,
 static HakoBuildInfo build_info = {.version = HAKO_VERSION,
                                    .flags = 0x00000001,
                                    .build_date = __DATE__ " " __TIME__,
+                                   .quickjs_version = QUICKJS_VERSION,
                                    .wasi_sdk_version = WASI_VERSION,
                                    .wasi_libc = WASI_WASI_LIBC,
                                    .llvm = WASI_LLVM,
@@ -91,19 +93,56 @@ static inline JS_BOOL is_static_constant(const JSValue *ptr) {
          ptr == (JSValue *)&HAKO_False || ptr == (JSValue *)&HAKO_True;
 }
 
-static int ends_with(const char *str, const char *suffix) {
-  size_t lenstr, lensuffix;
+static void* ts_strip_malloc_wrapper(void* user_data, size_t size) {
+  JSRuntime* rt = (JSRuntime*)user_data;
+  if (!rt) return NULL;
+  return js_malloc_rt(rt, size);
+}
 
-  if (!str || !suffix)
-    return 0;
+static void* ts_strip_realloc_wrapper(void* user_data, void* ptr, size_t size) {
+  JSRuntime* rt = (JSRuntime*)user_data;
+  if (!rt) return NULL;
+  return js_realloc_rt(rt, ptr, size);
+}
 
-  lenstr = strlen(str);
-  lensuffix = strlen(suffix);
+static void ts_strip_free_wrapper(void* user_data, void* ptr) {
+  JSRuntime* rt = (JSRuntime*)user_data;
+  if (!rt || !ptr) return;
+  js_free_rt(rt, ptr);
+}
 
-  if (lensuffix > lenstr)
-    return 0;
+static int ends_with_ts(const char *str) {
+  size_t len;
+  if (!str) return 0;
+  
+  len = strlen(str);
+  if (len < 3) return 0;
+  
+  // Check for .ts or .mts
+  if (len >= 3 && strcmp(str + len - 3, ".ts") == 0) return 1;
+  if (len >= 4 && strcmp(str + len - 4, ".mts") == 0) return 1;
+  if (len >= 4 && strcmp(str + len - 4, ".tsx") == 0) return 1;
+  if (len >= 5 && strcmp(str + len - 5, ".mtsx") == 0) return 1;
+  
+  return 0;
+}
 
-  return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
+static int ends_with_module_extension(const char *str) {
+  size_t len;
+  if (!str) return 0;
+  
+  len = strlen(str);
+  
+  // Check for .mjs (JavaScript modules)
+  if (len >= 4 && strcmp(str + len - 4, ".mjs") == 0) return 1;
+  
+  // Check for .mts (TypeScript modules)
+  if (len >= 4 && strcmp(str + len - 4, ".mts") == 0) return 1;
+  
+  // Check for .mtsx (TypeScript JSX modules)
+  if (len >= 5 && strcmp(str + len - 5, ".mtsx") == 0) return 1;
+  
+  return 0;
 }
 
 int hako_module_set_import_meta(JSContext *ctx, JSValueConst func_val,
@@ -331,10 +370,12 @@ JSValue *HAKO_RuntimeComputeMemoryUsage(JSRuntime *rt, JSContext *ctx) {
 
   JS_SetPropertyStr(ctx, result, "malloc_limit",
                     JS_NewInt64(ctx, s.malloc_limit));
-  JS_SetPropertyStr(ctx, result, "memory_used_size",
-                    JS_NewInt64(ctx, s.memory_used_size));
+  JS_SetPropertyStr(ctx, result, "malloc_size",
+                    JS_NewInt64(ctx, s.malloc_size));
   JS_SetPropertyStr(ctx, result, "malloc_count",
                     JS_NewInt64(ctx, s.malloc_count));
+  JS_SetPropertyStr(ctx, result, "memory_used_size",
+                    JS_NewInt64(ctx, s.memory_used_size));
   JS_SetPropertyStr(ctx, result, "memory_used_count",
                     JS_NewInt64(ctx, s.memory_used_count));
   JS_SetPropertyStr(ctx, result, "atom_count", JS_NewInt64(ctx, s.atom_count));
@@ -405,6 +446,68 @@ void HAKO_RuntimeJSThrow(JSContext *ctx, const char *message) {
 
 void HAKO_SetMaxStackSize(JSRuntime *rt, size_t stack_size) {
   JS_SetMaxStackSize(rt, stack_size);
+}
+
+HAKO_Status HAKO_InitTypeStripper(JSRuntime* rt) {
+  if (!rt) {
+    return HAKO_STATUS_ERROR_INVALID_ARGS;
+  }
+  if (JS_GetRuntimeOpaque(rt) != NULL) {
+    return HAKO_STATUS_SUCCESS;
+  }
+  
+  ts_strip_allocator_t allocator = {
+    .malloc_func = ts_strip_malloc_wrapper,
+    .realloc_func = ts_strip_realloc_wrapper,
+    .free_func = ts_strip_free_wrapper,
+    .user_data = rt
+  };
+  ts_strip_ctx_t* ctx = ts_strip_ctx_new_with_allocator(&allocator);
+  if (ctx == NULL) {
+    return HAKO_STATUS_ERROR_OUT_OF_MEMORY;
+  }
+  JS_SetRuntimeOpaque(rt, ctx);
+  return HAKO_STATUS_SUCCESS;
+}
+
+void HAKO_CleanupTypeStripper(JSRuntime* rt) {
+  if (!rt) {
+    return;
+  }
+  ts_strip_ctx_t* ctx = JS_GetRuntimeOpaque(rt);
+  if (ctx != NULL) {
+    ts_strip_ctx_delete(ctx);
+    JS_SetRuntimeOpaque(rt, NULL);
+  }
+}
+
+HAKO_Status HAKO_StripTypes(JSRuntime* rt, const char* typescript_source,
+                            char** javascript_out,
+                            size_t* javascript_len) {
+  ts_strip_result_t result;
+  ts_strip_ctx_t* ctx = JS_GetRuntimeOpaque(rt);
+  
+  if (ctx == NULL) {
+    return HAKO_STATUS_ERROR_INVALID_ARGS;
+  }
+  
+  result = ts_strip_with_ctx(ctx, typescript_source, 
+                             javascript_out, javascript_len);
+  
+  switch (result) {
+    case TS_STRIP_SUCCESS:
+      return HAKO_STATUS_SUCCESS;
+    case TS_STRIP_ERROR_INVALID_INPUT:
+      return HAKO_STATUS_ERROR_INVALID_ARGS;
+    case TS_STRIP_ERROR_PARSE_FAILED:
+      return HAKO_STATUS_ERROR_PARSE_FAILED;
+    case TS_STRIP_ERROR_UNSUPPORTED:
+      return HAKO_STATUS_ERROR_UNSUPPORTED;
+    case TS_STRIP_ERROR_OUT_OF_MEMORY:
+      return HAKO_STATUS_ERROR_OUT_OF_MEMORY;
+    default:
+      return HAKO_STATUS_ERROR_PARSE_FAILED;
+  }
 }
 
 JSValueConst *HAKO_GetUndefined(void) { return &HAKO_Undefined; }
@@ -654,10 +757,50 @@ JSValue *HAKO_Eval(JSContext *ctx, const char *js_code, size_t js_code_length,
   JSValueConst then_args[1];
   int is_module;
   JSValue *result = NULL;
+  char *stripped_js = NULL;
+  size_t stripped_len = 0;
+  const char *code_to_eval = js_code;
+  size_t code_len = js_code_length;
+  int should_strip = 0;
+
+  // Check if we should strip TypeScript types
+  should_strip =
+      (eval_flags & JS_EVAL_FLAG_STRIP_TYPES) || ends_with_ts(filename);
+
+  if (should_strip) {
+    HAKO_Status strip_status =
+        HAKO_StripTypes(JS_GetRuntime(ctx), js_code, &stripped_js, &stripped_len);
+
+    if (strip_status == HAKO_STATUS_SUCCESS) {
+      code_to_eval = stripped_js;
+      code_len = stripped_len;
+    } else if (strip_status == HAKO_STATUS_ERROR_UNSUPPORTED) {
+      // Unsupported syntax - use stripped output anyway (it's returned even on
+      // error)
+      if (stripped_js != NULL) {
+        code_to_eval = stripped_js;
+        code_len = stripped_len;
+      }
+    } else {
+      // Fatal stripping error - return exception
+      if (stripped_js != NULL) {
+         js_free_rt(JS_GetRuntime(ctx), stripped_js);
+      }
+      return jsvalue_to_heap(
+          ctx,
+          JS_ThrowSyntaxError(ctx, "Failed to strip TypeScript types: %s",
+                              strip_status == HAKO_STATUS_ERROR_PARSE_FAILED
+                                  ? "parse failed"
+                              : strip_status == HAKO_STATUS_ERROR_OUT_OF_MEMORY
+                                  ? "out of memory"
+                                  : "invalid input"));
+    }
+  }
 
   if (detect_module && (eval_flags & JS_EVAL_TYPE_MODULE) == 0) {
-    if (ends_with(filename, ".mjs") ||
-        JS_DetectModule(js_code, js_code_length)) {
+    // Check for module extensions (.mjs, .mts, .mtsx) or ES module syntax
+    if (ends_with_module_extension(filename) ||
+        JS_DetectModule(code_to_eval, code_len)) {
       eval_flags |= JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_STRICT;
     }
   }
@@ -665,7 +808,7 @@ JSValue *HAKO_Eval(JSContext *ctx, const char *js_code, size_t js_code_length,
   is_module = (eval_flags & JS_EVAL_TYPE_MODULE) != 0;
 
   if (is_module && (eval_flags & JS_EVAL_FLAG_COMPILE_ONLY) == 0) {
-    func_obj = JS_Eval(ctx, js_code, js_code_length, filename,
+    func_obj = JS_Eval(ctx, code_to_eval, code_len, filename,
                        eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
     if (JS_IsException(func_obj)) {
       result = jsvalue_to_heap(ctx, func_obj);
@@ -694,7 +837,7 @@ JSValue *HAKO_Eval(JSContext *ctx, const char *js_code, size_t js_code_length,
     eval_result = JS_EvalFunction(ctx, func_obj);
     func_obj = JS_UNDEFINED;
   } else {
-    eval_result = JS_Eval(ctx, js_code, js_code_length, filename, eval_flags);
+    eval_result = JS_Eval(ctx, code_to_eval, code_len, filename, eval_flags);
   }
 
   if (JS_IsException(eval_result)) {
@@ -750,6 +893,9 @@ JSValue *HAKO_Eval(JSContext *ctx, const char *js_code, size_t js_code_length,
   }
 
 done:
+  if (stripped_js != NULL) {
+    js_free(ctx, stripped_js);
+  }
   if (!JS_IsUndefined(func_obj))
     JS_FreeValue(ctx, func_obj);
   if (!JS_IsUndefined(eval_result))
@@ -1648,15 +1794,51 @@ void *HAKO_CompileToByteCode(JSContext *ctx, const char *js_code,
   size_t bytecode_len = 0;
   int is_module;
   int write_flags;
+  char *stripped_js = NULL;
+  size_t stripped_len = 0;
+  const char *code_to_compile = js_code;
+  size_t compile_len = js_code_length;
+  int should_strip = 0;
 
   if (!js_code || !filename || !out_bytecode_length) {
     JS_ThrowTypeError(ctx, "Invalid arguments");
     goto done;
   }
 
+  // Check if we should strip TypeScript types
+  should_strip = (flags & JS_EVAL_FLAG_STRIP_TYPES) || ends_with_ts(filename);
+
+  if (should_strip) {
+    HAKO_Status strip_status =
+        HAKO_StripTypes(JS_GetRuntime(ctx),js_code, &stripped_js, &stripped_len);
+
+    if (strip_status == HAKO_STATUS_SUCCESS) {
+      code_to_compile = stripped_js;
+      compile_len = stripped_len;
+    } else if (strip_status == HAKO_STATUS_ERROR_UNSUPPORTED) {
+      // Unsupported syntax - use stripped output anyway
+      if (stripped_js != NULL) {
+        code_to_compile = stripped_js;
+        compile_len = stripped_len;
+      }
+    } else {
+      // Fatal stripping error
+      if (stripped_js != NULL) {
+        js_free_rt(JS_GetRuntime(ctx), stripped_js);
+      }
+      JS_ThrowSyntaxError(
+          ctx, "Failed to strip TypeScript types: %s",
+          strip_status == HAKO_STATUS_ERROR_PARSE_FAILED    ? "parse failed"
+          : strip_status == HAKO_STATUS_ERROR_OUT_OF_MEMORY ? "out of memory"
+                                                            : "invalid input");
+      goto done;
+    }
+  }
+
   if (detect_module && (flags & JS_EVAL_TYPE_MODULE) == 0) {
-    if (ends_with(filename, ".mjs") ||
-        JS_DetectModule(js_code, js_code_length)) {
+    // Check for module extensions (.mjs, .mts, .mtsx) or ES module syntax
+    if (ends_with_module_extension(filename) ||
+        JS_DetectModule(code_to_compile, compile_len)) {
       flags |= JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_STRICT;
     }
   }
@@ -1664,7 +1846,7 @@ void *HAKO_CompileToByteCode(JSContext *ctx, const char *js_code,
   flags |= JS_EVAL_FLAG_COMPILE_ONLY;
   is_module = (flags & JS_EVAL_TYPE_MODULE) != 0;
 
-  compiled_obj = JS_Eval(ctx, js_code, js_code_length, filename, flags);
+  compiled_obj = JS_Eval(ctx, code_to_compile, compile_len, filename, flags);
   if (JS_IsException(compiled_obj))
     goto done;
 
@@ -1685,6 +1867,8 @@ void *HAKO_CompileToByteCode(JSContext *ctx, const char *js_code,
   *out_bytecode_length = bytecode_len;
 
 done:
+  if (stripped_js != NULL)
+    js_free(ctx, stripped_js);
   if (!JS_IsUndefined(compiled_obj))
     JS_FreeValue(ctx, compiled_obj);
   return (void *)js_bytecode_buf;

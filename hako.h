@@ -45,6 +45,13 @@ typedef enum HAKO_Intrinsic {
   HAKO_Intrinsic_Crypto = 1 << 17,
 } HAKO_Intrinsic;
 
+typedef enum HAKO_Status {
+  HAKO_STATUS_SUCCESS = 0,
+  HAKO_STATUS_ERROR_INVALID_ARGS = 1,
+  HAKO_STATUS_ERROR_PARSE_FAILED = 2,
+  HAKO_STATUS_ERROR_UNSUPPORTED = 3,
+  HAKO_STATUS_ERROR_OUT_OF_MEMORY = 4,
+} HAKO_Status;
 
 typedef enum HAKO_ErrorType {
   HAKO_ERROR_RANGE = 0,
@@ -733,6 +740,25 @@ HAKO_EXPORT("HAKO_IsUndefined") extern JS_BOOL HAKO_IsUndefined(JSValueConst* va
 //! @param val Value to check. Host owns.
 //! @return 1 if null or undefined, 0 otherwise
 HAKO_EXPORT("HAKO_IsNullOrUndefined") extern JS_BOOL HAKO_IsNullOrUndefined(JSValueConst* val);
+
+//! Initializes the TypeScript type stripper
+//! Must be called before using HAKO_StripTypes
+//! @param rt Runtime to associate with the stripper
+//! @return HAKO_STATUS_SUCCESS on success, error code on failure
+HAKO_EXPORT("HAKO_InitTypeStripper") extern HAKO_Status HAKO_InitTypeStripper(JSRuntime* rt);
+
+//! Cleans up the TypeScript type stripper
+//! Should be called during shutdown
+//! @param rt Runtime associated with the stripper
+HAKO_EXPORT("HAKO_CleanupTypeStripper") extern void HAKO_CleanupTypeStripper(JSRuntime* rt);
+
+//! Strips TypeScript type annotations from source code
+//! @param rt Runtime to use
+//! @param typescript_source Input TypeScript source code. Host owns.
+//! @param javascript_out Output parameter for JavaScript code. Caller owns, free with HAKO_RuntimeFree.
+//! @param javascript_len Output parameter for JavaScript length
+//! @return HAKO_Status indicating success or specific error type
+HAKO_EXPORT("HAKO_StripTypes") extern HAKO_Status HAKO_StripTypes(JSRuntime* rt, const char* typescript_source, char** javascript_out, size_t* javascript_len);
 
 #ifdef __cplusplus
 }

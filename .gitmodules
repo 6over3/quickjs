@@ -1,0 +1,3 @@
+[submodule "ts_strip/tree-sitter"]
+	path = ts_strip/tree-sitter
+	url = https://github.com/tree-sitter/tree-sitter

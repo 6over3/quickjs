@@ -381,23 +381,21 @@ const CSharpGenerator = {
 
   generateFileHeader(): string {
     return `
+
 #nullable enable
-using Wacs.Core.Runtime;
-using Wacs.Core.Runtime.Types;
+
+using HakoJS.Backend.Core;
 
 namespace HakoJS.Host;
 
 internal sealed class HakoRegistry
 {
     public const int NullPointer = 0;
-    private readonly ModuleInstance _moduleInstance;
-    private readonly WasmRuntime _runtime;
+    private readonly WasmInstance _instance;
 
-    internal HakoRegistry(WasmRuntime runtime, ModuleInstance moduleInstance)
+    internal HakoRegistry(WasmInstance instance)
     {
-        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
-        _moduleInstance = moduleInstance ?? throw new ArgumentNullException(nameof(moduleInstance));
-
+        _instance = instance ?? throw new ArgumentNullException(nameof(instance));
         InitializeFunctions();
     }
 `;
@@ -406,15 +404,33 @@ internal sealed class HakoRegistry
   getHelperMethodCall(exp: BindingsData['exports'][0]): string {
     const returnType = this.wasmTypeToCSharp(exp.wasmSignature.returns);
     const paramTypes = exp.wasmSignature.params.map(p => this.wasmTypeToCSharp(p));
-    const typeParams = paramTypes.length > 0 ? `<${paramTypes.join(', ')}>` : '';
+    const paramCount = paramTypes.length;
+    
+    const hasDouble = paramTypes.includes('double');
+    const hasLong = paramTypes.includes('long');
     
     if (returnType === 'void') {
-      return `TryCreateAction${typeParams}("${exp.name}")`;
+      // Action
+      if (hasLong) {
+        const typeParams = paramCount > 0 ? `<${paramTypes.join(', ')}>` : '';
+        return `TryCreateActionWithLong${typeParams}("${exp.name}")`;
+      } else {
+        const typeParams = paramCount > 0 ? `<${paramTypes.join(', ')}>` : '';
+        return `TryCreateAction${typeParams}("${exp.name}")`;
+      }
     } else {
+      // Func
       const suffix = returnType === 'long' ? 'Int64' : 
                      returnType === 'double' ? 'Double' : 
                      returnType === 'float' ? 'Float' : 'Int32';
-      return `TryCreateFunc${suffix}${typeParams}("${exp.name}")`;
+      
+      if (hasDouble) {
+        const typeParams = paramCount > 0 ? `<${paramTypes.join(', ')}>` : '';
+        return `TryCreateFunc${suffix}WithDouble${typeParams}("${exp.name}")`;
+      } else {
+        const typeParams = paramCount > 0 ? `<${paramTypes.join(', ')}>` : '';
+        return `TryCreateFunc${suffix}${typeParams}("${exp.name}")`;
+      }
     }
   },
 
@@ -460,77 +476,90 @@ internal sealed class HakoRegistry
 
   getHelperSignature(exp: BindingsData['exports'][0]): string {
     const returnType = this.wasmTypeToCSharp(exp.wasmSignature.returns);
-    const paramCount = exp.wasmSignature.params.length;
-    return `${returnType}|${paramCount}`;
+    const paramTypes = exp.wasmSignature.params.map(p => this.wasmTypeToCSharp(p));
+    const paramCount = paramTypes.length;
+    const hasDouble = paramTypes.includes('double');
+    const hasLong = paramTypes.includes('long');
+    
+    return `${returnType}|${paramCount}|${hasDouble}|${hasLong}`;
   },
 
   generateHelperMethod(signature: string): string {
-    const [returnType, paramCount] = signature.split('|');
-    const count = parseInt(paramCount, 10);
-    
-    const typeParams = count > 0 ? `<${Array(count).fill(0).map((_, i) => `T${i + 1}`).join(', ')}>` : '';
-    const args = count > 0 ? Array(count).fill(0).map((_, i) => `arg${i + 1}`).join(', ') : '';
-    const valueArray = count > 0 ? Array(count).fill(0).map((_, i) => `new Value(arg${i + 1}!)`).join(', ') : '';
-    
-    if (returnType === 'void') {
-      const actionType = count > 0 ? `Action<${Array(count).fill('T').map((_, i) => `T${i + 1}`).join(', ')}>` : 'Action';
-      
-      if (count === 0) {
-        return `    private Action? TryCreateAction(string functionName)
-    {
-        if (!_runtime.TryGetExportedFunction((_moduleInstance.Name ?? "hako", functionName), out var funcAddr))
-            return null;
-        var invoker = _runtime.CreateStackInvoker(funcAddr);
-        return () => { invoker([]); };
-    }
+  const [returnType, paramCountStr, hasDoubleStr, hasLongStr] = signature.split('|');
+  const paramCount = parseInt(paramCountStr, 10);
+  const hasDouble = hasDoubleStr === 'true';
+  const hasLong = hasLongStr === 'true';
+  
+  const typeParams = paramCount > 0 ? `<${Array(paramCount).fill(0).map((_, i) => `T${i + 1}`).join(', ')}>` : '';
+  
+  if (returnType === 'void') {
+    // Action
+    if (hasLong) {
+      const concreteParams = Array(paramCount).fill(0).map((_, i) => i === paramCount - 1 ? 'long' : 'int').join(', ');
+      return `private Action<${concreteParams}>? TryCreateActionWithLong${typeParams}(string functionName)
+{
+    return _instance.GetActionWithLong${typeParams}(functionName);
+}
+`;
+    } else {
+      if (paramCount === 0) {
+        return `private Action? TryCreateAction(string functionName)
+{
+    return _instance.GetAction(functionName);
+}
 `;
       } else {
-        return `    private ${actionType}? TryCreateAction${typeParams}(string functionName)
-    {
-        if (!_runtime.TryGetExportedFunction((_moduleInstance.Name ?? "hako", functionName), out var funcAddr))
-            return null;
-        var invoker = _runtime.CreateStackInvoker(funcAddr);
-        return (${args}) => { invoker([${valueArray}]); };
+        const concreteParams = Array(paramCount).fill('int').join(', ');
+        return `private Action<${concreteParams}>? TryCreateAction${typeParams}(string functionName)
+{
+    return _instance.GetAction${typeParams}(functionName);
+}
+`;
+      }
     }
+  } else {
+    // Func
+    const suffix = returnType === 'long' ? 'Int64' : 
+                   returnType === 'double' ? 'Double' : 
+                   returnType === 'float' ? 'Float' : 'Int32';
+    
+    if (hasDouble) {
+      const concreteParams = Array(paramCount).fill(0).map((_, i) => {
+        // Assuming double is the last parameter for "WithDouble" methods
+        return i === paramCount - 1 ? 'double' : 'int';
+      }).join(', ');
+      
+      if (paramCount === 0) {
+        return `private Func<${returnType}>? TryCreateFunc${suffix}WithDouble(string functionName)
+{
+    return _instance.GetFunction${suffix}WithDouble(functionName);
+}
+`;
+      } else {
+        return `private Func<${concreteParams}, ${returnType}>? TryCreateFunc${suffix}WithDouble${typeParams}(string functionName)
+{
+    return _instance.GetFunction${suffix}WithDouble${typeParams}(functionName);
+}
 `;
       }
     } else {
-      const suffix = returnType === 'long' ? 'Int64' : 
-                     returnType === 'double' ? 'Double' : 
-                     returnType === 'float' ? 'Float' : 'Int32';
-      const funcType = count > 0 ? 
-        `Func<${Array(count).fill('T').map((_, i) => `T${i + 1}`).join(', ')}, ${returnType}>` : 
-        `Func<${returnType}>`;
-      
-      if (count === 0) {
-        return `    private Func<${returnType}>? TryCreateFunc${suffix}(string functionName)
-    {
-        if (!_runtime.TryGetExportedFunction((_moduleInstance.Name ?? "hako", functionName), out var funcAddr))
-            return null;
-        var invoker = _runtime.CreateStackInvoker(funcAddr);
-        return () =>
-        {
-            var results = invoker([]);
-            return results[0];
-        };
-    }
+      if (paramCount === 0) {
+        return `private Func<${returnType}>? TryCreateFunc${suffix}(string functionName)
+{
+    return _instance.GetFunction${suffix}(functionName);
+}
 `;
       } else {
-        return `    private ${funcType}? TryCreateFunc${suffix}${typeParams}(string functionName)
-    {
-        if (!_runtime.TryGetExportedFunction((_moduleInstance.Name ?? "hako", functionName), out var funcAddr))
-            return null;
-        var invoker = _runtime.CreateStackInvoker(funcAddr);
-        return (${args}) =>
-        {
-            var results = invoker([${valueArray}]);
-            return results[0];
-        };
-    }
+        const concreteParams = Array(paramCount).fill('int').join(', ');
+        return `private Func<${concreteParams}, ${returnType}>? TryCreateFunc${suffix}${typeParams}(string functionName)
+{
+    return _instance.GetFunction${suffix}${typeParams}(functionName);
+}
 `;
       }
     }
-  },
+  }
+},
 
   generateHelperMethods(bindings: BindingsData): string {
     const signatures = new Set<string>();
@@ -538,11 +567,11 @@ internal sealed class HakoRegistry
       signatures.add(this.getHelperSignature(exp));
     }
     
-    const lines: string[] = ['    #region Helper Methods for Creating Invokers\n'];
+    const lines: string[] = ['#region Helper Methods for Creating Invokers\n'];
     for (const sig of Array.from(signatures).sort()) {
       lines.push(this.generateHelperMethod(sig));
     }
-    lines.push('    #endregion\n');
+    lines.push('#endregion\n');
     
     return lines.join('\n');
   },

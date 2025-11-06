@@ -42,6 +42,7 @@ WASI_VERSION := $(shell cat $(WASI_VERSION_FILE) 2>/dev/null || echo "unknown")
 WASI_WASI_LIBC := $(shell grep "wasi-libc:" $(WASI_VERSION_FILE) 2>/dev/null | cut -d' ' -f2 || echo "unknown")
 WASI_LLVM := $(shell grep "llvm:" $(WASI_VERSION_FILE) 2>/dev/null | cut -d' ' -f2 || echo "unknown")
 WASI_CONFIG := $(shell grep "config:" $(WASI_VERSION_FILE) 2>/dev/null | cut -d' ' -f2 || echo "unknown")
+QUICKJS_VERSION := $(shell cat VERSION 2>/dev/null || echo "unknown")
 
 OBJDIR=.obj
 
@@ -105,6 +106,9 @@ CFLAGS += -Wchar-subscripts -funsigned-char
 CFLAGS += -MMD -MF $(OBJDIR)/$(@F).d
 CFLAGS+=-fwrapv
 
+# tree-sitter and ts_strip include paths
+CFLAGS += -Its_strip -Its_strip/tree-sitter/lib/include
+
 ifdef CONFIG_WASI
 CFLAGS += $(SYSROOT) $(TARGET) $(WASI_CFLAGS)
 CFLAGS += -fPIC -ffunction-sections -fdata-sections
@@ -158,6 +162,7 @@ version.h: VERSION .FORCE
 	@echo "" >> $@
 	@echo "#define HAKO_VERSION \"$(HAKO_VERSION)\"" >> $@
 	@echo "#define GIT_VERSION \"$(GIT_VERSION)\"" >> $@
+	@echo "#define QUICKJS_VERSION \"$(QUICKJS_VERSION)\"" >> $@
 	@echo "" >> $@
 	@echo "#endif // VERSION_H" >> $@
 
@@ -178,7 +183,17 @@ wasi_version.h: $(WASI_VERSION_FILE) .FORCE
 
 QJS_LIB_OBJS=$(OBJDIR)/quickjs.o $(OBJDIR)/dtoa.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/quickjs-libc.o
 
-HAKO_OBJS=$(OBJDIR)/hako.o $(QJS_LIB_OBJS)
+# tree-sitter object (using amalgamated build)
+TREE_SITTER_OBJ=$(OBJDIR)/ts_strip/tree_sitter.o
+
+# ts_strip objects
+TS_STRIP_OBJS=$(OBJDIR)/ts_strip/ts_strip.o \
+              $(OBJDIR)/ts_strip/typescript_parser.o \
+              $(OBJDIR)/ts_strip/typescript_scanner.o \
+              $(OBJDIR)/ts_strip/tsx_parser.o \
+              $(OBJDIR)/ts_strip/tsx_scanner.o
+
+HAKO_OBJS=$(OBJDIR)/hako.o $(QJS_LIB_OBJS) $(TREE_SITTER_OBJ) $(TS_STRIP_OBJS)
 
 HOST_LIBS=-lm -ldl -lpthread
 LIBS=-lm -lpthread
@@ -190,7 +205,7 @@ endif
 LIBS+=$(EXTRA_LIBS)
 
 $(OBJDIR):
-	mkdir -p $(OBJDIR) $(OBJDIR)/examples $(OBJDIR)/tests
+	mkdir -p $(OBJDIR) $(OBJDIR)/examples $(OBJDIR)/tests $(OBJDIR)/ts_strip
 
 ifdef CONFIG_WASI
 
@@ -240,6 +255,7 @@ unicode_gen: $(OBJDIR)/unicode_gen.host.o $(OBJDIR)/cutils.host.o libunicode.c u
 	$(HOST_CC) $(LDFLAGS) $(CFLAGS) -o $@ $(OBJDIR)/unicode_gen.host.o $(OBJDIR)/cutils.host.o
 endif
 
+# Standard compilation rules
 $(OBJDIR)/%.o: %.c | $(OBJDIR)
 	$(CC) $(CFLAGS_OPT) -c -o $@ $<
 
@@ -257,6 +273,26 @@ $(OBJDIR)/%.debug.o: %.c | $(OBJDIR)
 
 $(OBJDIR)/%.check.o: %.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -DCONFIG_CHECK_JSVALUE -c -o $@ $<
+
+# tree-sitter compilation (amalgamated build)
+$(OBJDIR)/ts_strip/tree_sitter.o: ts_strip/tree-sitter/lib/src/lib.c | $(OBJDIR)
+	$(CC) $(CFLAGS_OPT) -Its_strip/tree-sitter/lib/src -Its_strip/tree-sitter/lib/src/wasm -D_POSIX_C_SOURCE=200112L -D_DEFAULT_SOURCE -c -o $@ $<
+
+# ts_strip compilation rules
+$(OBJDIR)/ts_strip/ts_strip.o: ts_strip/ts_strip.c | $(OBJDIR)
+	$(CC) $(CFLAGS_OPT) -c -o $@ $<
+
+$(OBJDIR)/ts_strip/typescript_parser.o: ts_strip/typescript/parser.c | $(OBJDIR)
+	$(CC) $(CFLAGS_OPT) -c -o $@ $<
+
+$(OBJDIR)/ts_strip/typescript_scanner.o: ts_strip/typescript/scanner.c | $(OBJDIR)
+	$(CC) $(CFLAGS_OPT) -c -o $@ $<
+
+$(OBJDIR)/ts_strip/tsx_parser.o: ts_strip/tsx/parser.c | $(OBJDIR)
+	$(CC) $(CFLAGS_OPT) -c -o $@ $<
+
+$(OBJDIR)/ts_strip/tsx_scanner.o: ts_strip/tsx/scanner.c | $(OBJDIR)
+	$(CC) $(CFLAGS_OPT) -c -o $@ $<
 
 clean:
 	rm -f repl.c out.c

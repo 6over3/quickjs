@@ -344,6 +344,8 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
 /* allow top-level await in normal script. JS_Eval() returns a
    promise. Only allowed with JS_EVAL_TYPE_GLOBAL */
 #define JS_EVAL_FLAG_ASYNC (1 << 7)
+/* strip type information from source code */
+#define JS_EVAL_FLAG_STRIP_TYPES (1 << 8)
 
 typedef JSValue JSCFunction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 typedef JSValue JSCFunctionMagic(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
