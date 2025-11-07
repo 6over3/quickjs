@@ -1788,6 +1788,10 @@ JS_BOOL HAKO_IsSet(JSValueConst *val) {
   return JS_IsSet(*val);
 }
 
+double HAKO_GetDateTimestamp(JSContext *ctx, JSValueConst *val) {
+  return JS_GetDateTimestamp(ctx, *val);
+}
+
 JSClassID HAKO_GetClassID(JSValueConst *val) { return JS_GetClassID(*val); }
 
 JS_BOOL HAKO_IsInstanceOf(JSContext *ctx, JSValueConst *val,

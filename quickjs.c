@@ -54573,6 +54573,16 @@ JS_BOOL JS_IsDate(JSValueConst val)
            JS_VALUE_GET_OBJ(val)->class_id == JS_CLASS_DATE;
 }
 
+double JS_GetDateTimestamp(JSContext *ctx, JSValueConst val) {
+    double timestamp = NAN;
+    if (JS_ThisTimeValue(ctx, &timestamp, val) < 0) {
+        // Clear the exception since we're returning NAN
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return NAN;
+    }
+    return timestamp;
+}
+
 int JS_AddIntrinsicDate(JSContext *ctx)
 {
     JSValue obj;

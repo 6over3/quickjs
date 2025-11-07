@@ -575,7 +575,6 @@ HAKO_EXPORT("HAKO_BJSON_Decode") extern JSValue* HAKO_BJSON_Decode(JSContext* ct
 //! @return JSON string value. Caller owns, free with HAKO_FreeValuePointer.
 HAKO_EXPORT("HAKO_ToJson") extern JSValue* HAKO_ToJson(JSContext* ctx, JSValueConst* val, int indent);
 
-
 //! Parses a JSON string
 //! @param ctx Context
 //! @param json JSON string. Host owns.
@@ -616,6 +615,12 @@ HAKO_EXPORT("HAKO_NewDate") extern JSValue* HAKO_NewDate(JSContext* ctx, double 
 //! @param val Value to check. Host owns.
 //! @return 1 if Date, 0 if not
 HAKO_EXPORT("HAKO_IsDate") extern JS_BOOL HAKO_IsDate(JSValueConst* val);
+
+//! Gets the timestamp from a Date object
+//! @param ctx Context
+//! @param val Date value. Host owns.
+//! @return Milliseconds since Unix epoch (UTC), or NAN if not a Date
+HAKO_EXPORT("HAKO_GetDateTimestamp") extern double HAKO_GetDateTimestamp(JSContext* ctx, JSValueConst* val);
 
 //! Gets the class ID of a value
 //! @param val Value to check. Host owns.

@@ -773,6 +773,7 @@ int JS_IsArray(JSContext *ctx, JSValueConst val);
 
 JSValue JS_NewDate(JSContext *ctx, double epoch_ms);
 JS_BOOL JS_IsDate(JSValueConst val);
+double JS_GetDateTimestamp(JSContext* ctx, JSValueConst val);
 
 JSValue JS_GetPropertyInternal(JSContext *ctx, JSValueConst obj,
                                JSAtom prop, JSValueConst receiver,
