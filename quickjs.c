@@ -54567,6 +54567,12 @@ JSValue JS_NewDate(JSContext *ctx, double epoch_ms)
     return obj;
 }
 
+JS_BOOL JS_IsDate(JSValueConst val)
+{
+    return JS_VALUE_GET_TAG(val) == JS_TAG_OBJECT &&
+           JS_VALUE_GET_OBJ(val)->class_id == JS_CLASS_DATE;
+}
+
 int JS_AddIntrinsicDate(JSContext *ctx)
 {
     JSValue obj;
@@ -59976,6 +59982,24 @@ int JS_AddIntrinsicCrypto(JSContext *ctx) {
     
     return JS_SetPropertyFunctionList(ctx, ctx->global_obj, js_crypto_obj,
                                  countof(js_crypto_obj));
+}
+
+BOOL JS_IsMap(JSValueConst val)
+{
+    JSObject *p;
+    if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
+        return FALSE;
+    p = JS_VALUE_GET_OBJ(val);
+    return (p->class_id == JS_CLASS_MAP);
+}
+
+BOOL JS_IsSet(JSValueConst val)
+{
+    JSObject *p;
+    if (JS_VALUE_GET_TAG(val) != JS_TAG_OBJECT)
+        return FALSE;
+    p = JS_VALUE_GET_OBJ(val);
+    return (p->class_id == JS_CLASS_SET);
 }
 
 /* @END_Hako */

@@ -1776,6 +1776,18 @@ JSValue *HAKO_NewDate(JSContext *ctx, double time) {
   return jsvalue_to_heap(ctx, JS_NewDate(ctx, time));
 }
 
+JS_BOOL HAKO_IsDate(JSValueConst *val) {
+  return JS_IsDate(*val);
+}
+
+JS_BOOL HAKO_IsMap(JSValueConst *val) {
+  return JS_IsMap(*val);
+}
+
+JS_BOOL HAKO_IsSet(JSValueConst *val) {
+  return JS_IsSet(*val);
+}
+
 JSClassID HAKO_GetClassID(JSValueConst *val) { return JS_GetClassID(*val); }
 
 JS_BOOL HAKO_IsInstanceOf(JSContext *ctx, JSValueConst *val,

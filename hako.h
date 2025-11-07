@@ -595,11 +595,27 @@ HAKO_EXPORT("HAKO_IsError") extern JS_BOOL HAKO_IsError(JSContext* ctx, JSValueC
 //! @return 1 if exception, 0 if not
 HAKO_EXPORT("HAKO_IsException") extern JS_BOOL HAKO_IsException(JSValueConst* val);
 
+//! Checks if a value is a Map object
+//! @param val Value to check. Host owns.
+//! @return 1 if Map, 0 if not
+HAKO_EXPORT("HAKO_IsMap") extern JS_BOOL HAKO_IsMap(JSValueConst* val);
+
+//! Checks if a value is a Set object
+//! @param val Value to check. Host owns.
+//! @return 1 if Set, 0 if not
+HAKO_EXPORT("HAKO_IsSet") extern JS_BOOL HAKO_IsSet(JSValueConst* val);
+
 //! Creates a new Date object
 //! @param ctx Context
 //! @param time Time value in milliseconds since epoch
 //! @return New Date object. Caller owns, free with HAKO_FreeValuePointer.
 HAKO_EXPORT("HAKO_NewDate") extern JSValue* HAKO_NewDate(JSContext* ctx, double time);
+
+//! Checks if a value is a Date object
+//! @param ctx Context
+//! @param val Value to check. Host owns.
+//! @return 1 if Date, 0 if not
+HAKO_EXPORT("HAKO_IsDate") extern JS_BOOL HAKO_IsDate(JSValueConst* val);
 
 //! Gets the class ID of a value
 //! @param val Value to check. Host owns.
