@@ -53,6 +53,7 @@ interface BindingsData {
       doc: string;
     }>;
     summary: string;
+    returnDoc: string;
   }>;
 }
 
@@ -151,10 +152,12 @@ interface HeaderFunctionInfo {
   cReturnType: string;
   paramTypes: Map<string, string>;
   paramDocs: Map<string, string>;
+  returnDoc: string;
 }
 
-function extractDocs(docLines: string[]): { summary: string; paramDocs: Map<string, string> } {
+function extractDocs(docLines: string[]): { summary: string; paramDocs: Map<string, string>; returnDoc: string } {
   let summary = '';
+  let returnDoc = '';
   const paramDocs = new Map<string, string>();
   
   for (const line of docLines) {
@@ -166,13 +169,15 @@ function extractDocs(docLines: string[]): { summary: string; paramDocs: Map<stri
         if (paramMatch) {
           paramDocs.set(paramMatch[1], paramMatch[2]);
         }
+      } else if (comment.startsWith('@return ')) {
+        returnDoc = comment.substring('@return '.length).trim();
       } else if (comment && !comment.startsWith('@') && !summary) {
         summary = comment;
       }
     }
   }
   
-  return { summary, paramDocs };
+  return { summary, paramDocs, returnDoc };
 }
 
 function parseHeaderFunction(lines: string[], exportLineIndex: number): HeaderFunctionInfo | null {
@@ -206,9 +211,9 @@ function parseHeaderFunction(lines: string[], exportLineIndex: number): HeaderFu
     docLines.unshift(line);
   }
   
-  const { summary, paramDocs } = extractDocs(docLines);
+  const { summary, paramDocs, returnDoc } = extractDocs(docLines);
   
-  return { name, summary, cReturnType, paramTypes, paramDocs };
+  return { name, summary, cReturnType, paramTypes, paramDocs, returnDoc };
 }
 
 function parseHeader(headerContent: string): Map<string, HeaderFunctionInfo> {
@@ -250,7 +255,8 @@ function createBindingsData(
         },
         cReturnType: 'unknown',
         cParams: [],
-        summary: ''
+        summary: '',
+        returnDoc: ''
       };
     }
     
@@ -269,7 +275,8 @@ function createBindingsData(
       },
       cReturnType: headerInfo.cReturnType,
       cParams,
-      summary: headerInfo.summary
+      summary: headerInfo.summary,
+      returnDoc: headerInfo.returnDoc
     };
   });
   
@@ -589,6 +596,9 @@ internal sealed class HakoRegistry
     lines.push(`    /// <summary>${exp.summary}</summary>`);
     for (const param of exp.cParams) {
       lines.push(`    /// <param name="${this.toCamelCase(param.name)}">${param.doc}</param>`);
+    }
+    if (exp.returnDoc && returnType !== "void") {
+      lines.push(`    /// <returns>${exp.returnDoc}</returns>`);
     }
     
     lines.push(`    public ${returnType} ${methodName}(${params})`);
