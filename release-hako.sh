@@ -20,7 +20,6 @@ fi
 
 wasm-opt hako.wasm \
     --enable-bulk-memory \
-    --enable-simd \
     --enable-nontrapping-float-to-int \
     --enable-tail-call \
     -O3 \

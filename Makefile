@@ -66,7 +66,7 @@ ifdef CONFIG_WASI
   WASI_CFLAGS+=-DWASI_STACK_SIZE=8388608
   
   # WASM optimization and feature flags
-  WASI_CFLAGS+=-msimd128 -mmultivalue -mmutable-globals -mtail-call -msign-ext -mbulk-memory -mnontrapping-fptoint -mextended-const
+  WASI_CFLAGS+=-mmultivalue -mmutable-globals -mtail-call -msign-ext -mbulk-memory -mnontrapping-fptoint -mextended-const
   
   # WASI linker flags for reactor model
   WASI_LDFLAGS=-Wl,--import-memory,--export-memory
