@@ -1,7 +1,6 @@
 #include "hako.h"
 #include "cutils.h"
 #include "quickjs.h"
-#include <cstdint>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
