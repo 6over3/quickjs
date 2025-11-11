@@ -378,17 +378,15 @@ HAKO_EXPORT("HAKO_NewBigUInt") extern JSValue* HAKO_NewBigUInt(JSContext* ctx, u
 
 //! Converts a JavaScript value to a 64-bit signed integer
 //! @param ctx Context
-//! @param out_val Output pointer for the 64-bit signed value
 //! @param val Value to convert. Host owns.
-//! @return 0 on success, -1 on error
-HAKO_EXPORT("HAKO_GetBigInt") extern int32_t HAKO_GetBigInt(JSContext* ctx, int64_t* out_val, JSValueConst* val);
+//! @return 64-bit signed integer value, or 0 on error (check for exceptions)
+HAKO_EXPORT("HAKO_GetBigInt") extern int64_t HAKO_GetBigInt(JSContext* ctx, JSValueConst* val);
 
 //! Converts a JavaScript value to a 64-bit unsigned integer
 //! @param ctx Context
-//! @param out_val Output pointer for the 64-bit unsigned value
 //! @param val Value to convert. Host owns.
-//! @return 0 on success, -1 on error
-HAKO_EXPORT("HAKO_GetBigUInt") extern int32_t HAKO_GetBigUInt(JSContext* ctx, uint64_t* out_val, JSValueConst* val);
+//! @return 64-bit unsigned integer value, or 0 on error (check for exceptions)
+HAKO_EXPORT("HAKO_GetBigUInt") extern uint64_t HAKO_GetBigUInt(JSContext* ctx, JSValueConst* val);
 
 //! Sets GC threshold for context
 //! @param ctx Context to configure

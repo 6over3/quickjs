@@ -670,24 +670,39 @@ internal sealed class HakoRegistry
 					`${this.cTypeToCSharp(p.cType, p.name)} ${this.toCamelCase(p.name)}`,
 			)
 			.join(", ");
+
+		// Map unsigned types to their signed equivalents for WASM
+		const unsignedToSignedMap: Record<string, string> = {
+			ulong: "long",
+			uint: "int",
+			ushort: "short",
+			byte: "sbyte",
+		};
+
 		const args = exp.cParams
 			.map((p) => {
 				const csharpType = this.cTypeToCSharp(p.cType, p.name);
 				const paramName = this.toCamelCase(p.name);
-				if (csharpType === "ulong") {
-					return `(long)${paramName}`;
+				const signedType = unsignedToSignedMap[csharpType];
+
+				if (signedType) {
+					return `(${signedType})${paramName}`;
 				}
 				return paramName;
 			})
 			.join(", ");
+
 		const returnType = this.getCSharpReturnType(
 			exp.wasmSignature.returns,
 			exp.cReturnType,
 		);
 		const isVoid = returnType === "void";
 
-		const lines: string[] = [];
+		// Cast return value for unsigned types since WASM only returns signed
+		const needsReturnCast = returnType in unsignedToSignedMap;
+		const returnCast = needsReturnCast ? `(${returnType})` : "";
 
+		const lines: string[] = [];
 		lines.push(`    /// <summary>${exp.summary}</summary>`);
 		for (const param of exp.cParams) {
 			lines.push(
@@ -697,10 +712,8 @@ internal sealed class HakoRegistry
 		if (exp.returnDoc && returnType !== "void") {
 			lines.push(`    /// <returns>${exp.returnDoc}</returns>`);
 		}
-
 		lines.push(`    public ${returnType} ${methodName}(${params})`);
 		lines.push("    {");
-
 		if (isVoid) {
 			lines.push("        Hako.Dispatcher.Invoke(() =>");
 			lines.push("        {");
@@ -717,12 +730,10 @@ internal sealed class HakoRegistry
 			lines.push(
 				`                throw new InvalidOperationException("${exp.name} not available");`,
 			);
-			lines.push(`            return ${fieldName}(${args});`);
+			lines.push(`            return ${returnCast}${fieldName}(${args});`);
 			lines.push("        });");
 		}
-
 		lines.push("    }\n");
-
 		return lines.join("\n");
 	},
 

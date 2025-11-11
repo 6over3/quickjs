@@ -1767,16 +1767,25 @@ JSValue *HAKO_NewBigInt(JSContext *ctx, int64_t value) {
   return jsvalue_to_heap(ctx, JS_NewBigInt64(ctx, value));
 }
 
-int32_t HAKO_GetBigInt(JSContext* ctx, int64_t* out_val, JSValueConst* val) {
-  return JS_ToBigInt64(ctx, out_val, *val);
+
+int64_t HAKO_GetBigInt(JSContext* ctx, JSValueConst* val) {
+  int64_t result = 0;
+  if (JS_ToBigInt64(ctx, &result, *val) < 0) {
+    return 0;  // Error - exception already thrown by JS.
+  }
+  return result;
 }
 
 JSValue *HAKO_NewBigUInt(JSContext *ctx, uint64_t value) {
   return jsvalue_to_heap(ctx, JS_NewBigUint64(ctx, value));
 }
 
-int32_t HAKO_GetBigUInt(JSContext* ctx, uint64_t* out_val, JSValueConst* val) {
-  return JS_ToBigInt64(ctx, (int64_t*)out_val, *val);
+uint64_t HAKO_GetBigUInt(JSContext* ctx, JSValueConst* val) {
+  int64_t result = 0;
+  if (JS_ToBigInt64(ctx, &result, *val) < 0) {
+    return 0;  // Error - exception already thrown by JS
+  }
+  return (uint64_t)result;
 }
 
 JSValue *HAKO_NewDate(JSContext *ctx, double time) {
