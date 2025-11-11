@@ -1,6 +1,7 @@
 #include "hako.h"
 #include "cutils.h"
 #include "quickjs.h"
+#include <cstdint>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -36,11 +37,11 @@ typedef struct HakoModuleSource {
 } HakoModuleSource;
 
 HAKO_IMPORT("call_function")
-JSValue *host_call_function(JSContext *ctx, JSValueConst *this_ptr, int argc,
+JSValue *host_call_function(JSContext *ctx, JSValueConst *this_ptr, int32_t argc,
                             JSValueConst *argv, uint32_t magic_func_id);
 
 HAKO_IMPORT("interrupt_handler")
-extern int host_interrupt_handler(JSRuntime *rt, JSContext *ctx, void *opaque);
+extern int32_t host_interrupt_handler(JSRuntime *rt, JSContext *ctx, void *opaque);
 
 HAKO_IMPORT("load_module")
 extern HakoModuleSource *host_load_module(JSRuntime *rt, JSContext *ctx,
@@ -53,11 +54,11 @@ extern char *host_normalize_module(JSRuntime *rt, JSContext *ctx,
                                    const char *module_name, void *opaque);
 
 HAKO_IMPORT("module_init")
-extern int host_module_init(JSContext *ctx, JSModuleDef *m);
+extern int32_t host_module_init(JSContext *ctx, JSModuleDef *m);
 
 HAKO_IMPORT("class_constructor")
 extern JSValue *host_class_constructor(JSContext *ctx, JSValueConst *new_target,
-                                       int argc, JSValueConst *argv,
+                                       int32_t argc, JSValueConst *argv,
                                        JSClassID class_id);
 
 HAKO_IMPORT("class_finalizer")
@@ -111,7 +112,7 @@ static void ts_strip_free_wrapper(void* user_data, void* ptr) {
   js_free_rt(rt, ptr);
 }
 
-static int ends_with_ts(const char *str) {
+static int32_t ends_with_ts(const char *str) {
   size_t len;
   if (!str) return 0;
   
@@ -127,7 +128,7 @@ static int ends_with_ts(const char *str) {
   return 0;
 }
 
-static int ends_with_module_extension(const char *str) {
+static int32_t ends_with_module_extension(const char *str) {
   size_t len;
   if (!str) return 0;
   
@@ -145,14 +146,14 @@ static int ends_with_module_extension(const char *str) {
   return 0;
 }
 
-int hako_module_set_import_meta(JSContext *ctx, JSValueConst func_val,
+int32_t hako_module_set_import_meta(JSContext *ctx, JSValueConst func_val,
                                 JS_BOOL use_realpath, JS_BOOL is_main) {
   JSModuleDef *m;
   char buf[1024 + 16];
   JSValue meta_obj = JS_UNDEFINED;
   JSAtom module_name_atom;
   const char *module_name = NULL;
-  int ret = -1;
+  int32_t ret = -1;
 
   m = JS_VALUE_GET_PTR(func_val);
   module_name_atom = JS_GetModuleName(ctx, m);
@@ -200,7 +201,7 @@ done:
 
 static JSModuleDef *hako_compile_module(JSContext *ctx, const char *module_name,
                                         const char *module_body) {
-  int eval_flags;
+  int32_t eval_flags;
   JSValue func_val = JS_UNDEFINED;
   JSModuleDef *module = NULL;
 
@@ -526,9 +527,9 @@ JSRuntime *HAKO_NewRuntime(void) {
 
 void HAKO_FreeRuntime(JSRuntime *rt) { JS_FreeRuntime(rt); }
 
-void HAKO_SetStripInfo(JSRuntime *rt, int flags) { JS_SetStripInfo(rt, flags); }
+void HAKO_SetStripInfo(JSRuntime *rt, int32_t flags) { JS_SetStripInfo(rt, flags); }
 
-int HAKO_GetStripInfo(JSRuntime *rt) { return JS_GetStripInfo(rt); }
+int32_t HAKO_GetStripInfo(JSRuntime *rt) { return JS_GetStripInfo(rt); }
 
 JSContext *HAKO_NewContext(JSRuntime *rt, HAKO_Intrinsic intrinsics) {
   JSContext *ctx = NULL;
@@ -738,15 +739,15 @@ JSValue hako_get_symbol_key(JSContext *ctx, JSValueConst *value) {
   return key;
 }
 
-JSValue hako_resolve_func_data(JSContext *ctx, JSValueConst this_val, int argc,
-                               JSValueConst *argv, int magic,
+JSValue hako_resolve_func_data(JSContext *ctx, JSValueConst this_val, int32_t argc,
+                               JSValueConst *argv, int32_t magic,
                                JSValue *func_data) {
   return JS_DupValue(ctx, func_data[0]);
 }
 
 JSValue *HAKO_Eval(JSContext *ctx, const char *js_code, size_t js_code_length,
                    const char *filename, JS_BOOL detect_module,
-                   int eval_flags) {
+                   int32_t eval_flags) {
   JSModuleDef *module = NULL;
   JSValue func_obj = JS_UNDEFINED;
   JSValue eval_result = JS_UNDEFINED;
@@ -755,13 +756,13 @@ JSValue *HAKO_Eval(JSContext *ctx, const char *js_code, size_t js_code_length,
   JSValue new_promise = JS_UNDEFINED;
   JSAtom then_atom = JS_ATOM_NULL;
   JSValueConst then_args[1];
-  int is_module;
+  int32_t is_module;
   JSValue *result = NULL;
   char *stripped_js = NULL;
   size_t stripped_len = 0;
   const char *code_to_eval = js_code;
   size_t code_len = js_code_length;
-  int should_strip = 0;
+  int32_t should_strip = 0;
 
   // Check if we should strip TypeScript types
   should_strip =
@@ -912,7 +913,7 @@ done:
   return result;
 }
 
-JSValue *HAKO_NewSymbol(JSContext *ctx, const char *description, int isGlobal) {
+JSValue *HAKO_NewSymbol(JSContext *ctx, const char *description, int32_t isGlobal) {
   JSValue global = JS_UNDEFINED;
   JSValue Symbol = JS_UNDEFINED;
   JSValue descriptionValue = JS_UNDEFINED;
@@ -977,7 +978,7 @@ done:
 
 JS_BOOL HAKO_IsGlobalSymbol(JSContext *ctx, JSValueConst *value) {
   JSValue key = JS_UNDEFINED;
-  int undefined;
+  int32_t undefined;
 
   key = hako_get_symbol_key(ctx, value);
   undefined = JS_IsUndefined(key);
@@ -988,11 +989,11 @@ JS_BOOL HAKO_IsGlobalSymbol(JSContext *ctx, JSValueConst *value) {
 
 JS_BOOL HAKO_IsJobPending(JSRuntime *rt) { return JS_IsJobPending(rt); }
 
-int HAKO_ExecutePendingJob(JSRuntime *rt, int maxJobsToExecute,
+int32_t HAKO_ExecutePendingJob(JSRuntime *rt, int32_t maxJobsToExecute,
                            JSContext **lastJobContext) {
   JSContext *pctx = NULL;
-  int status = 1;
-  int executed = 0;
+  int32_t status = 1;
+  int32_t executed = 0;
 
   while (executed != maxJobsToExecute && status == 1) {
     status = JS_ExecutePendingJob(rt, &pctx);
@@ -1032,7 +1033,7 @@ done:
 }
 
 JSValue *HAKO_GetPropNumber(JSContext *ctx, JSValueConst *this_val,
-                            int prop_name) {
+                            int32_t prop_name) {
   JSValue prop_val;
 
   prop_val = JS_GetPropertyUint32(ctx, *this_val, (uint32_t)prop_name);
@@ -1045,7 +1046,7 @@ JSValue *HAKO_GetPropNumber(JSContext *ctx, JSValueConst *this_val,
 JS_BOOL HAKO_SetProp(JSContext *ctx, JSValueConst *this_val,
                      JSValueConst *prop_name, JSValueConst *prop_value) {
   JSAtom prop_atom;
-  int result;
+  int32_t result;
 
   prop_atom = JS_ValueToAtom(ctx, *prop_name);
   result =
@@ -1061,9 +1062,9 @@ JS_BOOL HAKO_DefineProp(JSContext *ctx, JSValueConst *this_val,
                         JS_BOOL has_value, JS_BOOL has_writable,
                         JS_BOOL writable) {
   JSAtom prop_atom;
-  int flags = 0;
-  int has_get, has_set, is_accessor;
-  int result;
+  int32_t flags = 0;
+  int32_t has_get, has_set, is_accessor;
+  int32_t result;
 
   prop_atom = JS_ValueToAtom(ctx, *prop_name);
   if (prop_atom == JS_ATOM_NULL)
@@ -1117,16 +1118,16 @@ static inline uint32_t __JS_AtomToUInt32(JSAtom atom) {
 
 JSValue *HAKO_GetOwnPropertyNames(JSContext *ctx, JSValue ***out_ptrs,
                                   uint32_t *out_len, JSValueConst *obj,
-                                  int flags) {
+                                  int32_t flags) {
   JSPropertyEnum *tab = NULL;
   JSValue **ptrs = NULL;
   uint32_t total_props = 0;
   uint32_t out_props = 0;
   uint32_t i;
-  int hako_standard_compliant_number;
-  int hako_include_string;
-  int hako_include_number;
-  int status;
+  int32_t hako_standard_compliant_number;
+  int32_t hako_include_string;
+  int32_t hako_include_number;
+  int32_t status;
   JSAtom atom;
   JSValue atom_value = JS_UNDEFINED;
   JSValue *result = NULL;
@@ -1216,9 +1217,9 @@ done:
 }
 
 JSValue *HAKO_Call(JSContext *ctx, JSValueConst *func_obj,
-                   JSValueConst *this_obj, int argc, JSValueConst **argv_ptrs) {
+                   JSValueConst *this_obj, int32_t argc, JSValueConst **argv_ptrs) {
   JSValueConst argv[argc];
-  int i;
+  int32_t i;
 
   for (i = 0; i < argc; i++) {
     argv[i] = *(argv_ptrs[i]);
@@ -1255,7 +1256,7 @@ const char *HAKO_Dump(JSContext *ctx, JSValueConst *obj) {
   JSValue stack = JS_UNDEFINED;
   JSValue cause = JS_UNDEFINED;
   const char *result = NULL;
-  int depth;
+  int32_t depth;
 
   if (JS_IsError(ctx, *obj)) {
     error_obj = JS_NewObject(ctx);
@@ -1394,7 +1395,7 @@ JSValue *HAKO_GetModuleNamespace(JSContext *ctx,
 }
 
 HAKOTypeOf HAKO_TypeOf(JSContext *ctx, JSValueConst *value) {
-  int tag = JS_VALUE_GET_NORM_TAG(*value);
+  int32_t tag = JS_VALUE_GET_NORM_TAG(*value);
 
   switch (tag) {
   case JS_TAG_UNDEFINED:
@@ -1418,6 +1419,7 @@ HAKOTypeOf HAKO_TypeOf(JSContext *ctx, JSValueConst *value) {
     return HAKO_TYPE_NUMBER;
 
   case JS_TAG_BIG_INT:
+  case JS_TAG_SHORT_BIG_INT:
     return HAKO_TYPE_BIGINT;
 
   case JS_TAG_OBJECT:
@@ -1441,9 +1443,9 @@ JS_BOOL HAKO_IsNullOrUndefined(JSValueConst *value) {
 
 JSAtom HAKO_AtomLength = 0;
 
-int HAKO_GetLength(JSContext *ctx, uint32_t *out_len, JSValueConst *value) {
+int32_t HAKO_GetLength(JSContext *ctx, uint32_t *out_len, JSValueConst *value) {
   JSValue len_val = JS_UNDEFINED;
-  int result;
+  int32_t result;
 
   if (!JS_IsObject(*value))
     return -1;
@@ -1514,8 +1516,8 @@ JS_BOOL HAKO_BuildIsDebug(void) {
 #endif
 }
 
-JSValue hako_call_function(JSContext *ctx, JSValueConst this_val, int argc,
-                           JSValueConst *argv, int magic) {
+JSValue hako_call_function(JSContext *ctx, JSValueConst this_val, int32_t argc,
+                           JSValueConst *argv, int32_t magic) {
   JSValue *result_ptr = NULL;
   JSValue result;
 
@@ -1538,7 +1540,7 @@ JSValue *HAKO_NewFunction(JSContext *ctx, int32_t func_id, const char *name) {
   return jsvalue_to_heap(ctx, func_obj);
 }
 
-JSValueConst *HAKO_ArgvGetJSValueConstPointer(JSValueConst *argv, int index) {
+JSValueConst *HAKO_ArgvGetJSValueConstPointer(JSValueConst *argv, int32_t index) {
   return &argv[index];
 }
 
@@ -1550,11 +1552,11 @@ void HAKO_RuntimeDisableInterruptHandler(JSRuntime *rt) {
   JS_SetInterruptHandler(rt, NULL, NULL);
 }
 
-static int hako_module_check_attributes(JSContext *ctx, void *opaque,
+static int32_t hako_module_check_attributes(JSContext *ctx, void *opaque,
                                         JSValueConst attributes) {
   JSPropertyEnum *tab = NULL;
   uint32_t i, len;
-  int ret = 0;
+  int32_t ret = 0;
   const char *cstr = NULL;
   size_t cstr_len;
 
@@ -1705,7 +1707,7 @@ cleanup:
 
 JS_BOOL HAKO_IsArrayBuffer(JSValueConst *val) { return JS_IsArrayBuffer(*val); }
 
-JSValue *HAKO_ToJson(JSContext *ctx, JSValueConst *val, int indent) {
+JSValue *HAKO_ToJson(JSContext *ctx, JSValueConst *val, int32_t indent) {
   JSValue indent_val = JS_UNDEFINED;
   JSValue result = JS_UNDEFINED;
   JSValue *ret = NULL;
@@ -1762,14 +1764,20 @@ void HAKO_SetGCThreshold(JSContext *ctx, int64_t threshold) {
   JS_SetGCThreshold(JS_GetRuntime(ctx), (size_t)threshold);
 }
 
-JSValue *HAKO_NewBigInt(JSContext *ctx, int32_t low, int32_t high) {
-  int64_t combined = ((int64_t)high << 32) | ((uint32_t)low);
-  return jsvalue_to_heap(ctx, JS_NewBigInt64(ctx, combined));
+JSValue *HAKO_NewBigInt(JSContext *ctx, int64_t value) {
+  return jsvalue_to_heap(ctx, JS_NewBigInt64(ctx, value));
 }
 
-JSValue *HAKO_NewBigUInt(JSContext *ctx, int32_t low, int32_t high) {
-  uint64_t combined = ((uint64_t)high << 32) | (uint32_t)low;
-  return jsvalue_to_heap(ctx, JS_NewBigUint64(ctx, combined));
+int32_t HAKO_GetBigInt(JSContext* ctx, int64_t* out_val, JSValueConst* val) {
+  return JS_ToBigInt64(ctx, out_val, *val);
+}
+
+JSValue *HAKO_NewBigUInt(JSContext *ctx, uint64_t value) {
+  return jsvalue_to_heap(ctx, JS_NewBigUint64(ctx, value));
+}
+
+int32_t HAKO_GetBigUInt(JSContext* ctx, uint64_t* out_val, JSValueConst* val) {
+  return JS_ToBigInt64(ctx, (int64_t*)out_val, *val);
 }
 
 JSValue *HAKO_NewDate(JSContext *ctx, double time) {
@@ -1803,18 +1811,18 @@ HakoBuildInfo *HAKO_BuildInfo(void) { return &build_info; }
 
 void *HAKO_CompileToByteCode(JSContext *ctx, const char *js_code,
                              size_t js_code_length, const char *filename,
-                             JS_BOOL detect_module, int flags,
+                             JS_BOOL detect_module, int32_t flags,
                              size_t *out_bytecode_length) {
   JSValue compiled_obj = JS_UNDEFINED;
   uint8_t *js_bytecode_buf = NULL;
   size_t bytecode_len = 0;
-  int is_module;
-  int write_flags;
+  int32_t is_module;
+  int32_t write_flags;
   char *stripped_js = NULL;
   size_t stripped_len = 0;
   const char *code_to_compile = js_code;
   size_t compile_len = js_code_length;
-  int should_strip = 0;
+  int32_t should_strip = 0;
 
   if (!js_code || !filename || !out_bytecode_length) {
     JS_ThrowTypeError(ctx, "Invalid arguments");
@@ -1960,12 +1968,12 @@ JSModuleDef *HAKO_NewCModule(JSContext *ctx, const char *name_str) {
   return JS_NewCModule(ctx, name_str, host_module_init);
 }
 
-int HAKO_AddModuleExport(JSContext *ctx, JSModuleDef *m,
+int32_t HAKO_AddModuleExport(JSContext *ctx, JSModuleDef *m,
                          const char *export_name) {
   return JS_AddModuleExport(ctx, m, export_name);
 }
 
-int HAKO_SetModuleExport(JSContext *ctx, JSModuleDef *m,
+int32_t HAKO_SetModuleExport(JSContext *ctx, JSModuleDef *m,
                          const char *export_name, JSValueConst *val) {
   return JS_SetModuleExport(ctx, m, export_name, JS_DupValue(ctx, *val));
 }
@@ -1996,8 +2004,8 @@ static void hako_promise_rejection_tracker_wrapper(JSContext *ctx,
 }
 
 static JSValue hako_class_constructor_wrapper(JSContext *ctx,
-                                              JSValueConst new_target, int argc,
-                                              JSValueConst *argv, int magic) {
+                                              JSValueConst new_target, int32_t argc,
+                                              JSValueConst *argv, int32_t magic) {
   JSClassID class_id = (JSClassID)magic;
   JSValue *result = NULL;
   JSValue ret;

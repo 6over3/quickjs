@@ -18,7 +18,7 @@ extern "C" {
 #define HAKO_EXPORT(name)
 #endif
 
-typedef int JSModuleInitFunc(JSContext* ctx, JSModuleDef* mod);
+typedef int32_t JSModuleInitFunc(JSContext* ctx, JSModuleDef* mod);
 
 #define HAKO_GPN_NUMBER_MASK (1 << 6)
 #define HAKO_STANDARD_COMPLIANT_NUMBER (1 << 7)
@@ -91,12 +91,12 @@ HAKO_EXPORT("HAKO_FreeRuntime") extern void HAKO_FreeRuntime(JSRuntime* rt);
 //! Configure debug info stripping for compiled code
 //! @param rt Runtime to configure
 //! @param flags Strip flags
-HAKO_EXPORT("HAKO_SetStripInfo") extern void HAKO_SetStripInfo(JSRuntime* rt, int flags);
+HAKO_EXPORT("HAKO_SetStripInfo") extern void HAKO_SetStripInfo(JSRuntime* rt, int32_t flags);
 
 //! Get debug info stripping configuration
 //! @param rt Runtime to query
 //! @return Current strip flags
-HAKO_EXPORT("HAKO_GetStripInfo") extern int HAKO_GetStripInfo(JSRuntime* rt);
+HAKO_EXPORT("HAKO_GetStripInfo") extern int32_t HAKO_GetStripInfo(JSRuntime* rt);
 
 //! Sets memory limit for runtime
 //! @param rt Runtime to configure
@@ -124,7 +124,7 @@ HAKO_EXPORT("HAKO_IsJobPending") extern JS_BOOL HAKO_IsJobPending(JSRuntime* rt)
 //! @param max_jobs_to_execute Maximum jobs to execute, 0 for unlimited
 //! @param out_last_job_ctx Output parameter, set to last job's context. Can be NULL. Host borrows.
 //! @return Number of jobs executed, or -1 on error
-HAKO_EXPORT("HAKO_ExecutePendingJob") extern int HAKO_ExecutePendingJob(JSRuntime* rt, int max_jobs_to_execute, JSContext** out_last_job_ctx);
+HAKO_EXPORT("HAKO_ExecutePendingJob") extern int32_t HAKO_ExecutePendingJob(JSRuntime* rt, int32_t max_jobs_to_execute, JSContext** out_last_job_ctx);
 
 //! Enables interrupt handler for runtime
 //! @param rt Runtime to configure
@@ -313,7 +313,7 @@ HAKO_EXPORT("HAKO_GetProp") extern JSValue* HAKO_GetProp(JSContext* ctx, JSValue
 //! @param this_val Object to get property from
 //! @param prop_index Property index
 //! @return Property value or NULL on error. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_GetPropNumber") extern JSValue* HAKO_GetPropNumber(JSContext* ctx, JSValueConst* this_val, int prop_index);
+HAKO_EXPORT("HAKO_GetPropNumber") extern JSValue* HAKO_GetPropNumber(JSContext* ctx, JSValueConst* this_val, int32_t prop_index);
 
 //! Sets a property value
 //! @param ctx Context to use
@@ -345,7 +345,7 @@ HAKO_EXPORT("HAKO_DefineProp") extern JS_BOOL HAKO_DefineProp(JSContext* ctx, JS
 //! @param obj Object to enumerate
 //! @param flags Property enumeration flags
 //! @return NULL on success, exception value on error. Caller owns exception, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_GetOwnPropertyNames") extern JSValue* HAKO_GetOwnPropertyNames(JSContext* ctx, JSValue*** out_prop_ptrs, uint32_t* out_prop_len, JSValueConst* obj, int flags);
+HAKO_EXPORT("HAKO_GetOwnPropertyNames") extern JSValue* HAKO_GetOwnPropertyNames(JSContext* ctx, JSValue*** out_prop_ptrs, uint32_t* out_prop_len, JSValueConst* obj, int32_t flags);
 
 //! Gets the global object
 //! @param ctx Context to use
@@ -357,7 +357,7 @@ HAKO_EXPORT("HAKO_GetGlobalObject") extern JSValue* HAKO_GetGlobalObject(JSConte
 //! @param out_len Output length value
 //! @param val Object to get length from
 //! @return 0 on success, negative on error
-HAKO_EXPORT("HAKO_GetLength") extern int HAKO_GetLength(JSContext* ctx, uint32_t* out_len, JSValueConst* val);
+HAKO_EXPORT("HAKO_GetLength") extern int32_t HAKO_GetLength(JSContext* ctx, uint32_t* out_len, JSValueConst* val);
 
 //! Creates a new number value
 //! @param ctx Context to create in
@@ -367,17 +367,29 @@ HAKO_EXPORT("HAKO_NewFloat64") extern JSValue* HAKO_NewFloat64(JSContext* ctx, d
 
 //! Creates a new BigInt from 64-bit signed value
 //! @param ctx Context to create in
-//! @param low Low 32 bits
-//! @param high High 32 bits
+//! @param value 64-bit signed integer value
 //! @return New BigInt. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_NewBigInt") extern JSValue* HAKO_NewBigInt(JSContext* ctx, int32_t low, int32_t high);
+HAKO_EXPORT("HAKO_NewBigInt") extern JSValue* HAKO_NewBigInt(JSContext* ctx, int64_t value);
 
 //! Creates a new BigInt from 64-bit unsigned value
 //! @param ctx Context to create in
-//! @param low Low 32 bits
-//! @param high High 32 bits
+//! @param value 64-bit unsigned integer value
 //! @return New BigInt. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_NewBigUInt") extern JSValue* HAKO_NewBigUInt(JSContext* ctx, int32_t low, int32_t high);
+HAKO_EXPORT("HAKO_NewBigUInt") extern JSValue* HAKO_NewBigUInt(JSContext* ctx, uint64_t value);
+
+//! Converts a JavaScript value to a 64-bit signed integer
+//! @param ctx Context
+//! @param out_val Output pointer for the 64-bit signed value
+//! @param val Value to convert. Host owns.
+//! @return 0 on success, -1 on error
+HAKO_EXPORT("HAKO_GetBigInt") extern int32_t HAKO_GetBigInt(JSContext* ctx, int64_t* out_val, JSValueConst* val);
+
+//! Converts a JavaScript value to a 64-bit unsigned integer
+//! @param ctx Context
+//! @param out_val Output pointer for the 64-bit unsigned value
+//! @param val Value to convert. Host owns.
+//! @return 0 on success, -1 on error
+HAKO_EXPORT("HAKO_GetBigUInt") extern int32_t HAKO_GetBigUInt(JSContext* ctx, uint64_t* out_val, JSValueConst* val);
 
 //! Sets GC threshold for context
 //! @param ctx Context to configure
@@ -417,7 +429,7 @@ HAKO_EXPORT("HAKO_ToCString") extern const char* HAKO_ToCString(JSContext* ctx, 
 //! @param description Symbol description
 //! @param is_global True for global symbol (Symbol.for), false for unique
 //! @return New symbol. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_NewSymbol") extern JSValue* HAKO_NewSymbol(JSContext* ctx, const char* description, int is_global);
+HAKO_EXPORT("HAKO_NewSymbol") extern JSValue* HAKO_NewSymbol(JSContext* ctx, const char* description, int32_t is_global);
 
 //! Gets symbol description or key
 //! @param ctx Context to use
@@ -496,13 +508,13 @@ HAKO_EXPORT("HAKO_NewFunction") extern JSValue* HAKO_NewFunction(JSContext* ctx,
 //! @param argc Argument count
 //! @param argv_ptrs Array of argument pointers. Host owns.
 //! @return Function result. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_Call") extern JSValue* HAKO_Call(JSContext* ctx, JSValueConst* func_obj, JSValueConst* this_obj, int argc, JSValueConst** argv_ptrs);
+HAKO_EXPORT("HAKO_Call") extern JSValue* HAKO_Call(JSContext* ctx, JSValueConst* func_obj, JSValueConst* this_obj, int32_t argc, JSValueConst** argv_ptrs);
 
 //! Gets a pointer to an argv element
 //! @param argv Arguments array. Host owns.
 //! @param index Index to access
 //! @return Pointer to value at index. Host owns.
-HAKO_EXPORT("HAKO_ArgvGetJSValueConstPointer") extern JSValueConst* HAKO_ArgvGetJSValueConstPointer(JSValueConst* argv, int index);
+HAKO_EXPORT("HAKO_ArgvGetJSValueConstPointer") extern JSValueConst* HAKO_ArgvGetJSValueConstPointer(JSValueConst* argv, int32_t index);
 
 //! Evaluates JavaScript code
 //! @param ctx Context
@@ -512,7 +524,7 @@ HAKO_EXPORT("HAKO_ArgvGetJSValueConstPointer") extern JSValueConst* HAKO_ArgvGet
 //! @param detect_module Whether to auto-detect ES module syntax
 //! @param eval_flags Evaluation flags (JS_EVAL_*)
 //! @return Evaluation result. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_Eval") extern JSValue* HAKO_Eval(JSContext* ctx, const char* js_code, size_t js_code_len, const char* filename, JS_BOOL detect_module, int eval_flags);
+HAKO_EXPORT("HAKO_Eval") extern JSValue* HAKO_Eval(JSContext* ctx, const char* js_code, size_t js_code_len, const char* filename, JS_BOOL detect_module, int32_t eval_flags);
 
 //! Creates a new promise with resolve/reject functions
 //! @param ctx Context
@@ -573,7 +585,7 @@ HAKO_EXPORT("HAKO_BJSON_Decode") extern JSValue* HAKO_BJSON_Decode(JSContext* ct
 //! @param val Value to stringify. Host owns.
 //! @param indent Indentation level for formatting
 //! @return JSON string value. Caller owns, free with HAKO_FreeValuePointer.
-HAKO_EXPORT("HAKO_ToJson") extern JSValue* HAKO_ToJson(JSContext* ctx, JSValueConst* val, int indent);
+HAKO_EXPORT("HAKO_ToJson") extern JSValue* HAKO_ToJson(JSContext* ctx, JSValueConst* val, int32_t indent);
 
 //! Parses a JSON string
 //! @param ctx Context
@@ -647,7 +659,7 @@ HAKO_EXPORT("HAKO_BuildInfo") extern HakoBuildInfo* HAKO_BuildInfo();
 //! @param flags Compilation flags (JS_EVAL_*)
 //! @param out_bytecode_len Output pointer for bytecode length
 //! @return Bytecode buffer or NULL on error. Caller owns, free with HAKO_Free.
-HAKO_EXPORT("HAKO_CompileToByteCode") extern void* HAKO_CompileToByteCode(JSContext* ctx, const char* js_code, size_t js_code_len, const char* filename, JS_BOOL detect_module, int flags, size_t* out_bytecode_len);
+HAKO_EXPORT("HAKO_CompileToByteCode") extern void* HAKO_CompileToByteCode(JSContext* ctx, const char* js_code, size_t js_code_len, const char* filename, JS_BOOL detect_module, int32_t flags, size_t* out_bytecode_len);
 
 //! Evaluates compiled bytecode
 //! @param ctx Context
@@ -668,7 +680,7 @@ HAKO_EXPORT("HAKO_NewCModule") extern JSModuleDef* HAKO_NewCModule(JSContext* ct
 //! @param mod Module definition
 //! @param export_name Export name. Host owns.
 //! @return 0 on success, -1 on error
-HAKO_EXPORT("HAKO_AddModuleExport") extern int HAKO_AddModuleExport(JSContext* ctx, JSModuleDef* mod, const char* export_name);
+HAKO_EXPORT("HAKO_AddModuleExport") extern int32_t HAKO_AddModuleExport(JSContext* ctx, JSModuleDef* mod, const char* export_name);
 
 //! Sets the value of a module export
 //! @param ctx Context
@@ -676,7 +688,7 @@ HAKO_EXPORT("HAKO_AddModuleExport") extern int HAKO_AddModuleExport(JSContext* c
 //! @param export_name Export name. Host owns.
 //! @param val Export value. Host owns.
 //! @return 0 on success, -1 on error
-HAKO_EXPORT("HAKO_SetModuleExport") extern int HAKO_SetModuleExport(JSContext* ctx, JSModuleDef* mod, const char* export_name, JSValueConst* val);
+HAKO_EXPORT("HAKO_SetModuleExport") extern int32_t HAKO_SetModuleExport(JSContext* ctx, JSModuleDef* mod, const char* export_name, JSValueConst* val);
 
 //! Gets the name of a module
 //! @param ctx Context
