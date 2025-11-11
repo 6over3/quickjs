@@ -1770,7 +1770,7 @@ JSValue *HAKO_NewBigInt(JSContext *ctx, int64_t value) {
 
 int64_t HAKO_GetBigInt(JSContext* ctx, JSValueConst* val) {
   int64_t result = 0;
-  if (JS_ToBigInt64(ctx, &result, *val) < 0) {
+  if (JS_ToInt64Ext(ctx, &result, *val) < 0) {
     return 0;  // Error - exception already thrown by JS.
   }
   return result;
@@ -1782,7 +1782,7 @@ JSValue *HAKO_NewBigUInt(JSContext *ctx, uint64_t value) {
 
 uint64_t HAKO_GetBigUInt(JSContext* ctx, JSValueConst* val) {
   int64_t result = 0;
-  if (JS_ToBigInt64(ctx, &result, *val) < 0) {
+  if (JS_ToInt64Ext(ctx, &result, *val) < 0) {
     return 0;  // Error - exception already thrown by JS
   }
   return (uint64_t)result;
