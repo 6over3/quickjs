@@ -86,7 +86,7 @@ ifdef CONFIG_WASI
   WASI_LDFLAGS+=-Wl,--strip-all
   
   
-  #WASI_CFLAGS+=-DDUMP_LEAKS
+  WASI_CFLAGS+=-DDUMP_LEAKS
   
   CONFIG_LTO=
 else
